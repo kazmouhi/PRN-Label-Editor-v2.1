@@ -1,0 +1,91 @@
+// 
+// Imprime Label.lbe
+// sur pica 104/8
+// en C:\Users\hzzcgs\Desktop\App\Label.prn
+// 2/6/2025 20:11:16 PM
+// 
+// Labelstar PLUS V3.81 (Build 1020)
+// 
+// 
+// Signe de début: 0x01
+// Signe de fin: 0x17
+// 
+// LABEL TYPE: Etiquettes adhésives
+// WIDTH: 75.00 mm
+// HEIGHT: 50.00 mm
+// GAP LENGTH: 2.00 mm
+// ALIGNMENT: 0
+// COLUMNS: 1
+FCDA--r0-------
+FCCL--r0005000-
+FCCM--r00200---
+FCCO--r0007500-
+FCCJ--r0-------
+FCCHA-r1-------
+// CUT OFFSET: 21.00 mm
+// DISPENSER OFFSET: 11.00 mm
+FCSCA-r+210----
+FCSDA-r+110----
+// Y OFFSET: 0.00 mm
+FCCD--r+000----
+// X OFFSET: 0.00 mm
+FCCE--r+000----
+// TEAR OFF: 0.00 mm
+FCCG--r+000----
+// SPEED: 100 mm/s
+FCAA--r080-----
+// CONTRAST: 100%
+FCAB--r100-----
+// CUT MODE: Pas disponible
+// CUT INTERVAL: 1
+FCDD--r0-------
+FBBD--r0001----
+// DISPENSER MODE: Pas disponible
+FCDC--r0-------
+// DISPENSER LEVEL: 2500 mV
+FCCF--r+25-----
+// LABEL CONTROL: Transmission normal
+// LABEL SCAN POSITION: 10%
+FCDE--r0-------
+FCDEA-r10------
+// RIBBON CONTROL: Oui
+// RIBBON SENSE: Faible
+FCDB--r10------
+// MIRROR LABEL: Non
+FCDO--r0-------
+// ROTATE LABEL: Non
+FCDN--r1-------
+// RFTAG
+FRF---rCLR=1
+// BARCODE (1/100 mm)
+AM[1]1177;5154;0;37;0;761;0;3;1;0
+BM[1]@AFMPN@
+// BARCODE (1/100 mm)
+AM[2]2764;2017;0;37;0;380;0;1;1;0
+BM[2]MA
+// TEXT (1/100 mm)
+AM[3]2336;1670;0;4;0;3;200;200;0
+BM[3]@Date@
+// TEXT (1/100 mm)
+AM[4]2291;3450;0;4;0;1;400;400;0
+BM[4]1x
+// TEXT (1/100 mm)
+AM[5]2301;3101;0;4;0;1;200;200;0
+BM[5]
+// TEXT (1/100 mm)
+AM[6]1765;4207;0;4;0;1;400;400;0
+BM[6]@AFMPN@
+// TEXT (1/100 mm)
+AM[7]2327;5195;0;4;0;3;300;300;0
+BM[7]K067L
+// TEXT (1/100 mm)
+AM[8]3150;4481;0;4;0;3;200;200;0
+BM[8]Made In
+AM[9]3440;4543;0;4;0;3;200;200;0
+BM[9]@Country@
+// LINES: 9
+FBAA--r9
+// COPIES: 1
+FBBA--r00001---
+// PRINT
+FBC---r--------
