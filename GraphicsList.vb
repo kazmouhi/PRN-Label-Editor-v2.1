@@ -2998,68 +2998,27 @@ Namespace Draw
         ''' <summary>
         ''' Performs a punch out operation (first object minus all others)
         ''' </summary>
-        ''' <summary>
-
-        ''' <summary>
-        ''' Returns the outer outline of all combined shapes (union boundary only).
-        ''' This version does not use ClipperLib — it relies on GraphicsPath Region combination.
-        ''' </summary>
-        ''' <summary>
-        ''' Computes the outer outline (union boundary) of selected shapes.
-        ''' Compatible with .NET Framework GDI+ (no ClipperLib, no Region.GetOutline).
-        ''' </summary>
-        ''' <summary>
-        ''' Computes the outer outline (union boundary) of selected shapes.
-        ''' Works with .NET Framework; no ClipperLib or Region.GetOutline required.
-        ''' </summary>
 
 
         Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
+            ' "Punch Out" should return the outline of the union of selected shapes,
+            ' not perform subtraction (A - B).
             If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then
                 Return New List(Of PathCommands)
             End If
-
             If drawObjects.Count = 1 Then
                 Return drawObjects(0).PathCommands
             End If
 
-            ' Convert all shapes to BezierPaths
-            Dim allPaths As New List(Of BezierPath)
-            For Each obj In drawObjects
-                Dim paths = ConvertToBezierPaths(obj.PathCommands)
-                allPaths.AddRange(paths)
-            Next
+            ' Reuse the union logic (outer boundary of all selected shapes)
+            Dim mergedPaths As List(Of PathCommands) = MergePathsUnion(drawObjects)
 
-            ' Find all intersection points between all pairs of shapes
-            Dim intersections As New List(Of PathIntersection)
-            For i As Integer = 0 To allPaths.Count - 1
-                For j As Integer = i + 1 To allPaths.Count - 1
-                    Dim pathIntersections = FindPathPairIntersections(allPaths(i), allPaths(j), i, j)
-                    intersections.AddRange(pathIntersections)
-                Next
-            Next
+            If mergedPaths Is Nothing OrElse mergedPaths.Count = 0 Then
+                MessageBox.Show("not OK")
+                Return New List(Of PathCommands)
+            End If
 
-            ' Split all paths at intersection points
-            Dim splitPaths = SplitAllPathsAtIntersections(allPaths, intersections)
-
-            ' Mark segments: keep only those on the OUTER boundary
-            MarkOuterBoundarySegments(splitPaths, allPaths)
-
-            ' Collect all outer boundary segments
-            Dim outerSegments As New List(Of BezierSegment)
-            For Each path In splitPaths
-                For Each segment In path.Segments
-                    If segment.Keep Then
-                        outerSegments.Add(segment)
-                    End If
-                Next
-            Next
-
-            ' Walk the boundary to create continuous path(s)
-            Dim resultPaths = WalkOuterBoundary(outerSegments)
-
-            ' Convert to PathCommands
-            Return ConvertToPathCommandsImproved(resultPaths)
+            Return mergedPaths
         End Function
 
 
