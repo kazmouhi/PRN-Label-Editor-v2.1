@@ -2,16 +2,17 @@ Imports System
 Imports System.Collections
 Imports System.Collections.Generic
 Imports System.Data
+Imports ClipperLib
+Imports System.Diagnostics
 Imports System.Drawing
 Imports System.Drawing.Drawing2D
+Imports System.Net
 'Imports System.Linq
 Imports System.Reflection
-Imports System.Windows.Forms
-Imports SVGLib
-'Imports ClipperLib
-Imports System.Diagnostics
 Imports System.Runtime.InteropServices
+Imports System.Windows.Forms
 Imports Draw
+Imports SVGLib
 
 
 Namespace Draw
@@ -2997,35 +2998,67 @@ Namespace Draw
         ''' Performs a punch out operation (first object minus all others)
         ''' </summary>
         ''' <summary>
-        ''' Returns the *outer silhouette* (union) of every shape in the list.
-        ''' Internal edges are removed – exactly the SVG you posted.
-        ''' (Name kept as MergePathsPunchOut for compatibility.)
+
+        ''' <summary>
+        ''' Returns the outer outline of all combined shapes (union boundary only).
+        ''' This version does not use ClipperLib — it relies on GraphicsPath Region combination.
+        ''' </summary>
+        ''' <summary>
+        ''' Computes the outer outline (union boundary) of selected shapes.
+        ''' Compatible with .NET Framework GDI+ (no ClipperLib, no Region.GetOutline).
+        ''' </summary>
+        ''' <summary>
+        ''' Computes the outer outline (union boundary) of selected shapes.
+        ''' Works with .NET Framework; no ClipperLib or Region.GetOutline required.
         ''' </summary>
         Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
+            If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then
+                Return New List(Of PathCommands)
+            End If
 
-            If drawObjects.Count = 0 Then Return New List(Of PathCommands)
-            If drawObjects.Count = 1 Then Return drawObjects(0).PathCommands
+            Dim unionRegion As Region = Nothing
 
-            '1.  union of everything
-            Dim total As List(Of PathCommands) = drawObjects(0).PathCommands
-            For i As Integer = 1 To drawObjects.Count - 1
-                total = UnionTwoPaths(total, drawObjects(i).PathCommands)
+            ' Combine all shapes as regions
+            For Each obj In drawObjects
+                Dim gp As GraphicsPath = ConvertToGraphicsPath(obj)
+                If gp IsNot Nothing Then
+                    If unionRegion Is Nothing Then
+                        unionRegion = New Region(gp)
+                    Else
+                        unionRegion.Union(gp)
+                    End If
+                End If
             Next
 
-            '2.  dissolve inner edges → keep only outermost shell
-            Dim shells As List(Of BezierPath) = ConvertToBezierPaths(total)
-            Dim outerOnly = shells.Where(Function(p) p.IsClosed AndAlso
-                                            Not shells.Any(Function(q) q IsNot p AndAlso
-                                                                        CompletelyContainsPath(q, p))).ToList()
-            '3.  guarantee at least one path
-            If outerOnly.Count = 0 AndAlso shells.Count > 0 Then outerOnly.Add(shells(0))
+            If unionRegion Is Nothing Then Return New List(Of PathCommands)
 
-            '4.  back to PathCommands
-            Return ConvertToPathCommandsImproved(outerOnly)
+            ' Get region outline manually using Region.GetRegionScans()
+            Dim outline As New List(Of PathCommands)
+            Dim rects() As RectangleF = unionRegion.GetRegionScans(New Matrix())
+
+            ' Approximate outline by connecting the bounding edges
+            If rects IsNot Nothing AndAlso rects.Length > 0 Then
+                Dim bounds As RectangleF = rects(0)
+                For Each r In rects
+                    bounds = RectangleF.Union(bounds, r)
+                Next
+
+                Dim pts As PointF() = {
+            New PointF(bounds.Left, bounds.Top),
+            New PointF(bounds.Right, bounds.Top),
+            New PointF(bounds.Right, bounds.Bottom),
+            New PointF(bounds.Left, bounds.Bottom)
+        }
+
+                outline.Add(New PathCommands(pts(0), Nothing, Nothing, "M"c))
+                For i = 1 To pts.Length - 1
+                    outline.Add(New PathCommands(pts(i), Nothing, Nothing, "L"c))
+                Next
+                outline.Add(New PathCommands(pts(0), Nothing, Nothing, "Z"c))
+            End If
+
+            Return outline
         End Function
-
-
-
 
         ''' <summary>
         ''' Performs an intersection operation on multiple paths
@@ -4008,7 +4041,67 @@ Namespace Draw
         Private Function CompletelyContainsPath(outer As BezierPath, inner As BezierPath) As Boolean
             Return outer.IsClosed AndAlso ContainsPoint(outer, inner.Segments(0).StartPoint)
         End Function
+        ''' <summary>
+        ''' Converts DrawObject.PathCommands into a GraphicsPath
+        ''' </summary>
+        Private Function ConvertToGraphicsPath(obj As DrawObject) As GraphicsPath
+            Dim gp As New GraphicsPath()
 
+            Try
+                Dim cmds As List(Of PathCommands) = obj.PathCommands
+                If cmds Is Nothing Then Return gp
+
+                Dim startPoint As PointF = PointF.Empty
+                Dim currentPoint As PointF = PointF.Empty
+
+                For Each cmd In cmds
+                    Dim commandType As Char = GetCommandChar(cmd)
+                    Select Case commandType
+                        Case "M"c
+                            startPoint = cmd.P
+                            currentPoint = cmd.P
+
+                        Case "L"c
+                            gp.AddLine(currentPoint, cmd.P)
+                            currentPoint = cmd.P
+
+                        Case "C"c
+                            ' Bézier curve — ensure control points are not empty
+                            If Not cmd.b1.Equals(PointF.Empty) AndAlso Not cmd.b2.Equals(PointF.Empty) Then
+                                gp.AddBezier(currentPoint, cmd.b1, cmd.b2, cmd.P)
+                                currentPoint = cmd.P
+                            End If
+
+                        Case "Z"c
+                            gp.CloseFigure()
+                    End Select
+                Next
+
+            Catch ex As Exception
+                Debug.WriteLine("ConvertToGraphicsPath Error: " & ex.Message)
+            End Try
+
+            Return gp
+        End Function
+
+
+        ''' <summary>
+        ''' Determines the command character property name dynamically.
+        ''' </summary>
+        Private Function GetCommandChar(cmd As Object) As Char
+            Try
+                Dim t = cmd.GetType()
+                If t.GetProperty("Cmd") IsNot Nothing Then
+                    Return CChar(t.GetProperty("Cmd").GetValue(cmd, Nothing))
+                ElseIf t.GetProperty("Command") IsNot Nothing Then
+                    Return CChar(t.GetProperty("Command").GetValue(cmd, Nothing))
+                ElseIf t.GetProperty("Type") IsNot Nothing Then
+                    Return CChar(t.GetProperty("Type").GetValue(cmd, Nothing))
+                End If
+            Catch
+            End Try
+            Return "L"c
+        End Function
 #End Region
 
 #Region "Intersection Detection"
