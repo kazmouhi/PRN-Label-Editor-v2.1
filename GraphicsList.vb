@@ -2996,20 +2996,20 @@ Namespace Draw
         ''' <summary>
         ''' Performs a punch out operation (first object minus all others)
         ''' </summary>
-
         Private Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
             If drawObjects.Count = 0 Then Return New List(Of PathCommands)
-
+        
             '1.  union of everything
             Dim total As List(Of PathCommands) = drawObjects(0).PathCommands
             For i As Integer = 1 To drawObjects.Count - 1
                 total = UnionTwoPaths(total, drawObjects(i).PathCommands)
             Next
-
-            '2.  convert to Bézier paths so we can test containment
+        
+            '2.  convert to Bézier paths
             Dim shells As List(Of BezierPath) = ConvertToBezierPaths(total)
-
-            '3.  keep only outermost paths (remove every path that is inside another)
+            If shells.Count = 0 Then Return total          ' should never happen, but be safe
+        
+            '3.  keep only outermost paths
             Dim outerOnly As New List(Of BezierPath)
             For Each cand In shells
                 Dim isInside As Boolean = False
@@ -3022,10 +3022,14 @@ Namespace Draw
                 Next
                 If Not isInside Then outerOnly.Add(cand)
             Next
-
-            '4.  convert back to PathCommands
+        
+            '4.  edge-case: every path was inside another → keep the first one
+            If outerOnly.Count = 0 Then outerOnly.Add(shells(0))
+        
+            '5.  convert back to PathCommands
             Return ConvertToPathCommandsImproved(outerOnly)
         End Function
+
 
         ''' <summary>
         ''' Performs an intersection operation on multiple paths
@@ -4006,10 +4010,9 @@ Namespace Draw
         End Function
         Private Function CompletelyContainsPath(outer As BezierPath, inner As BezierPath) As Boolean
             If Not outer.IsClosed Then Return False
-            'test a single point – enough for oriented, non-self-intersecting union result
-            Dim probe As PointF = inner.Segments(0).StartPoint
-            Return ContainsPoint(outer, probe)
+            Return ContainsPoint(outer, inner.Segments(0).StartPoint)
         End Function
+
 #End Region
 
 #Region "Intersection Detection"
@@ -4709,4 +4712,5 @@ Namespace Draw
 
 
     End Class
+
 End Namespace
