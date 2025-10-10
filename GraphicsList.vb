@@ -3019,108 +3019,47 @@ Namespace Draw
                 Return New List(Of PathCommands)
             End If
 
-            ' --- Step 1: compute overall bounds ---
-            Dim allBounds As RectangleF = RectangleF.Empty
-            Dim paths As New List(Of GraphicsPath)
+            If drawObjects.Count = 1 Then
+                Return drawObjects(0).PathCommands
+            End If
+
+            ' Convert all shapes to BezierPaths
+            Dim allPaths As New List(Of BezierPath)
             For Each obj In drawObjects
-                Dim gp As GraphicsPath = ConvertToGraphicsPath(obj)
-                If gp IsNot Nothing AndAlso Not gp.GetBounds().IsEmpty Then
-                    paths.Add(gp)
-                    If allBounds.IsEmpty Then
-                        allBounds = gp.GetBounds()
-                    Else
-                        allBounds = RectangleF.Union(allBounds, gp.GetBounds())
-                    End If
-                End If
+                Dim paths = ConvertToBezierPaths(obj.PathCommands)
+                allPaths.AddRange(paths)
             Next
 
-            If paths.Count = 0 Then Return New List(Of PathCommands)
-
-            ' --- Step 2: rasterize union into bitmap mask ---
-            Dim scale As Integer = 4 ' controls precision
-            Dim bmpW As Integer = CInt(allBounds.Width * scale) + 4
-            Dim bmpH As Integer = CInt(allBounds.Height * scale) + 4
-            Dim bmp As New Bitmap(bmpW, bmpH, PixelFormat.Format24bppRgb)
-
-            Using g = Graphics.FromImage(bmp)
-                g.Clear(Color.Black)
-                g.SmoothingMode = Drawing2D.SmoothingMode.AntiAlias
-                g.TranslateTransform(-allBounds.Left * scale, -allBounds.Top * scale)
-                g.ScaleTransform(scale, scale)
-                Using fillBrush As New SolidBrush(Color.White)
-                    For Each gp In paths
-                        g.FillPath(fillBrush, gp)
-                    Next
-                End Using
-            End Using
-
-            ' --- Step 3: extract outline pixels (white->black transition) ---
-            Dim outlinePts As New List(Of PointF)
-            Dim visited(bmp.Width - 1, bmp.Height - 1) As Boolean
-
-            ' Helper function to check pixel color safely
-            Dim IsWhitePixel As Func(Of Integer, Integer, Boolean) = Function(x As Integer, y As Integer) As Boolean
-                                                                         If x < 0 OrElse y < 0 OrElse x >= bmp.Width OrElse y >= bmp.Height Then Return False
-                                                                         Return bmp.GetPixel(x, y).R > 128
-                                                                     End Function
-
-            ' Find starting point (first white pixel)
-            Dim startX As Integer = -1, startY As Integer = -1
-            For y As Integer = 0 To bmp.Height - 1
-                For x As Integer = 0 To bmp.Width - 1
-                    If IsWhitePixel(x, y) Then
-                        startX = x : startY = y
-                        Exit For
-                    End If
+            ' Find all intersection points between all pairs of shapes
+            Dim intersections As New List(Of PathIntersection)
+            For i As Integer = 0 To allPaths.Count - 1
+                For j As Integer = i + 1 To allPaths.Count - 1
+                    Dim pathIntersections = FindPathPairIntersections(allPaths(i), allPaths(j), i, j)
+                    intersections.AddRange(pathIntersections)
                 Next
-                If startX <> -1 Then Exit For
             Next
 
-            If startX <> -1 Then
-                Dim dirs As Point() = {
-            New Point(1, 0), New Point(1, 1), New Point(0, 1), New Point(-1, 1),
-            New Point(-1, 0), New Point(-1, -1), New Point(0, -1), New Point(1, -1)
-        }
+            ' Split all paths at intersection points
+            Dim splitPaths = SplitAllPathsAtIntersections(allPaths, intersections)
 
-                Dim px = startX, py = startY
-                Dim dirIndex As Integer = 0
-                Dim loopSafety As Integer = 0
+            ' Mark segments: keep only those on the OUTER boundary
+            MarkOuterBoundarySegments(splitPaths, allPaths)
 
-                Do
-                    outlinePts.Add(New PointF(px / scale + allBounds.Left, py / scale + allBounds.Top))
-                    visited(px, py) = True
-
-                    ' find next neighbor clockwise
-                    Dim foundNext As Boolean = False
-                    For i = 0 To 7
-                        Dim idx As Integer = (dirIndex + i) Mod 8
-                        Dim nx As Integer = px + dirs(idx).X
-                        Dim ny As Integer = py + dirs(idx).Y
-                        If IsWhitePixel(nx, ny) AndAlso Not visited(nx, ny) Then
-                            px = nx : py = ny : dirIndex = (idx + 6) Mod 8 ' rotate search
-                            foundNext = True
-                            Exit For
-                        End If
-                    Next
-
-                    If Not foundNext Then Exit Do
-
-                    loopSafety += 1
-                    If loopSafety > 10000 Then Exit Do
-                Loop Until (px = startX AndAlso py = startY)
-            End If
-
-            ' --- Step 4: build PathCommands ---
-            Dim result As New List(Of PathCommands)
-            If outlinePts.Count > 0 Then
-                result.Add(New PathCommands(outlinePts(0), Nothing, Nothing, "M"c))
-                For i = 1 To outlinePts.Count - 1
-                    result.Add(New PathCommands(outlinePts(i), Nothing, Nothing, "L"c))
+            ' Collect all outer boundary segments
+            Dim outerSegments As New List(Of BezierSegment)
+            For Each path In splitPaths
+                For Each segment In path.Segments
+                    If segment.Keep Then
+                        outerSegments.Add(segment)
+                    End If
                 Next
-                result.Add(New PathCommands(outlinePts(0), Nothing, Nothing, "Z"c))
-            End If
+            Next
 
-            Return result
+            ' Walk the boundary to create continuous path(s)
+            Dim resultPaths = WalkOuterBoundary(outerSegments)
+
+            ' Convert to PathCommands
+            Return ConvertToPathCommandsImproved(resultPaths)
         End Function
 
 
@@ -4165,6 +4104,315 @@ Namespace Draw
             Catch
             End Try
             Return "L"c
+        End Function
+
+        ''' <summary>
+        ''' Marks segments that are on the outer boundary of the union
+        ''' A segment is on the outer boundary if it's NOT inside any other shape
+        ''' </summary>
+        Private Sub MarkOuterBoundarySegments(splitPaths As List(Of BezierPath), originalPaths As List(Of BezierPath))
+            For Each path In splitPaths
+                For Each segment In path.Segments
+                    ' Test the midpoint of this segment
+                    Dim testPoint = segment.PointAt(0.5)
+
+                    ' Count how many shapes contain this point
+                    Dim containmentCount As Integer = 0
+
+                    For Each originalPath In originalPaths
+                        If originalPath.IsClosed AndAlso ContainsPoint(originalPath, testPoint) Then
+                            containmentCount += 1
+                        End If
+                    Next
+
+                    ' Segment is on outer boundary if it's inside exactly ONE shape
+                    ' (or zero if it's on a non-overlapping part)
+                    ' If inside 2+ shapes, it's an internal edge we don't want
+                    segment.Keep = (containmentCount <= 1)
+                Next
+            Next
+        End Sub
+
+        ''' <summary>
+        ''' Walks connected outer boundary segments to form complete paths
+        ''' Uses angle-based selection to prefer continuing along the boundary
+        ''' </summary>
+        Private Function WalkOuterBoundary(segments As List(Of BezierSegment)) As List(Of BezierPath)
+            Dim result As New List(Of BezierPath)
+            If segments.Count = 0 Then Return result
+
+            ' Build endpoint lookup map with tolerance
+            Const TOLERANCE As Double = 0.01
+            Dim endpointMap As New Dictionary(Of String, List(Of BezierSegment))
+
+            For Each seg In segments
+                If Not seg.Keep Then Continue For
+
+                Dim startKey = PointToKeyRounded(seg.StartPoint, TOLERANCE)
+                Dim endKey = PointToKeyRounded(seg.EndPoint, TOLERANCE)
+
+                If Not endpointMap.ContainsKey(endKey) Then
+                    endpointMap(endKey) = New List(Of BezierSegment)
+                End If
+                endpointMap(endKey).Add(seg)
+            Next
+
+            Dim used As New HashSet(Of BezierSegment)
+            Dim keptSegments = segments.Where(Function(s) s.Keep).ToList()
+
+            ' Keep walking until all segments are used
+            While used.Count < keptSegments.Count
+                Dim seed = keptSegments.FirstOrDefault(Function(s) Not used.Contains(s))
+                If seed Is Nothing Then Exit While
+
+                Dim path As New BezierPath()
+                Dim currentSeg = seed
+                Dim startPoint = seed.StartPoint
+
+                Dim maxSteps As Integer = keptSegments.Count + 10
+                Dim stepCount As Integer = 0
+
+                Do While stepCount < maxSteps
+                    ' Add current segment
+                    path.Segments.Add(DirectCast(currentSeg.Clone(), BezierSegment))
+                    used.Add(currentSeg)
+                    stepCount += 1
+
+                    Dim currentEnd = currentSeg.EndPoint
+
+                    ' Check if we closed the loop
+                    If PointDistance(currentEnd, startPoint) < TOLERANCE AndAlso path.Segments.Count > 1 Then
+                        path.IsClosed = True
+                        Exit Do
+                    End If
+
+                    ' Find next segment using angle-based selection (prefer rightmost turn = outer boundary)
+                    Dim endKey = PointToKeyRounded(currentEnd, TOLERANCE)
+                    Dim candidates As List(Of BezierSegment) = Nothing
+
+                    If Not endpointMap.TryGetValue(endKey, candidates) Then Exit Do
+
+                    ' Filter out used segments
+                    candidates = candidates.Where(Function(c) Not used.Contains(c)).ToList()
+                    If candidates.Count = 0 Then Exit Do
+
+                    ' Calculate incoming direction vector
+                    Dim incomingDir = GetSegmentExitDirection(currentSeg)
+
+                    ' Find segment that makes the rightmost turn (for outer boundary)
+                    Dim bestSeg As BezierSegment = Nothing
+                    Dim bestAngle As Double = -Math.PI * 2 ' Start with very negative
+
+                    For Each cand In candidates
+                        ' Check both forward and reverse directions
+                        For Each reversed In {False, True}
+                            Dim testSeg = If(reversed, ReverseSegment(cand), cand)
+
+                            ' Check if this segment starts at our current end point
+                            If PointDistance(testSeg.StartPoint, currentEnd) > TOLERANCE Then Continue For
+
+                            Dim outgoingDir = GetSegmentEntryDirection(testSeg)
+
+                            ' Calculate turn angle (positive = left turn, negative = right turn)
+                            Dim angle = CalculateSignedAngle(incomingDir, outgoingDir)
+
+                            ' For outer boundary, prefer rightmost turn (most negative angle)
+                            ' But also accept left turns if no right turn available
+                            If bestSeg Is Nothing OrElse angle > bestAngle Then
+                                bestAngle = angle
+                                bestSeg = testSeg
+                            End If
+                        Next
+                    Next
+
+                    If bestSeg Is Nothing Then Exit Do
+                    currentSeg = bestSeg
+                Loop
+
+                If path.Segments.Count > 0 Then
+                    result.Add(path)
+                End If
+            End While
+
+            Return result
+        End Function
+
+        ''' <summary>
+        ''' Gets the direction vector at the exit point of a segment
+        ''' </summary>
+        Private Function GetSegmentExitDirection(segment As BezierSegment) As PointF
+            If segment.SegmentType = "L"c Then
+                ' For lines, direction is simply end - start
+                Return New PointF(
+            segment.EndPoint.X - segment.StartPoint.X,
+            segment.EndPoint.Y - segment.StartPoint.Y)
+            ElseIf segment.SegmentType = "C"c Then
+                ' For curves, use the direction from last control point to end
+                Return New PointF(
+            segment.EndPoint.X - segment.Control2.X,
+            segment.EndPoint.Y - segment.Control2.Y)
+            Else
+                Return New PointF(
+            segment.EndPoint.X - segment.StartPoint.X,
+            segment.EndPoint.Y - segment.StartPoint.Y)
+            End If
+        End Function
+
+        ''' <summary>
+        ''' Gets the direction vector at the entry point of a segment
+        ''' </summary>
+        Private Function GetSegmentEntryDirection(segment As BezierSegment) As PointF
+            If segment.SegmentType = "L"c Then
+                Return New PointF(
+            segment.EndPoint.X - segment.StartPoint.X,
+            segment.EndPoint.Y - segment.StartPoint.Y)
+            ElseIf segment.SegmentType = "C"c Then
+                ' For curves, use the direction from start to first control point
+                Return New PointF(
+            segment.Control1.X - segment.StartPoint.X,
+            segment.Control1.Y - segment.StartPoint.Y)
+            Else
+                Return New PointF(
+            segment.EndPoint.X - segment.StartPoint.X,
+            segment.EndPoint.Y - segment.StartPoint.Y)
+            End If
+        End Function
+
+        ''' <summary>
+        ''' Calculates signed angle between two direction vectors
+        ''' Positive = counter-clockwise (left turn), Negative = clockwise (right turn)
+        ''' </summary>
+        Private Function CalculateSignedAngle(dir1 As PointF, dir2 As PointF) As Double
+            ' Normalize vectors
+            Dim len1 = Math.Sqrt(dir1.X * dir1.X + dir1.Y * dir1.Y)
+            Dim len2 = Math.Sqrt(dir2.X * dir2.X + dir2.Y * dir2.Y)
+
+            If len1 < 0.0001 OrElse len2 < 0.0001 Then Return 0
+
+            Dim n1 = New PointF(dir1.X / len1, dir1.Y / len1)
+            Dim n2 = New PointF(dir2.X / len2, dir2.Y / len2)
+
+            ' Cross product (z-component) gives signed area
+            Dim cross = n1.X * n2.Y - n1.Y * n2.X
+
+            ' Dot product gives angle
+            Dim dot = n1.X * n2.X + n1.Y * n2.Y
+
+            ' atan2 gives signed angle
+            Return Math.Atan2(cross, dot)
+        End Function
+
+        ''' <summary>
+        ''' Rounds point coordinates and creates a lookup key
+        ''' </summary>
+        Private Function PointToKeyRounded(p As PointF, tolerance As Double) As String
+            ' Round to tolerance grid
+            Dim x = Math.Round(p.X / tolerance) * tolerance
+            Dim y = Math.Round(p.Y / tolerance) * tolerance
+            Return $"{x:F3},{y:F3}"
+        End Function
+
+        ''' <summary>
+        ''' Finds intersections between two specific paths
+        ''' </summary>
+        Private Function FindPathPairIntersections(path1 As BezierPath, path2 As BezierPath,
+                                          idx1 As Integer, idx2 As Integer) As List(Of PathIntersection)
+            Dim result As New List(Of PathIntersection)
+
+            ' Quick bounding box check
+            If Not path1.GetBoundingBox().IntersectsWith(path2.GetBoundingBox()) Then
+                Return result
+            End If
+
+            ' Check each segment pair
+            For i As Integer = 0 To path1.Segments.Count - 1
+                For j As Integer = 0 To path2.Segments.Count - 1
+                    Dim intersections = FindSegmentIntersections(path1.Segments(i), path2.Segments(j))
+
+                    For Each intersection In intersections
+                        result.Add(New PathIntersection(
+                    intersection.Item1,
+                    idx1, idx2,
+                    i, j,
+                    intersection.Item2,
+                    intersection.Item3))
+                    Next
+                Next
+            Next
+
+            Return result
+        End Function
+
+        ''' <summary>
+        ''' Splits all paths at their intersection points
+        ''' </summary>
+        Private Function SplitAllPathsAtIntersections(paths As List(Of BezierPath),
+                                              intersections As List(Of PathIntersection)) As List(Of BezierPath)
+            Dim result As New List(Of BezierPath)
+
+            For pathIdx As Integer = 0 To paths.Count - 1
+                Dim path = paths(pathIdx)
+                Dim pathIntersections = intersections.Where(
+            Function(i) i.Path1Index = pathIdx OrElse i.Path2Index = pathIdx).ToList()
+
+                If pathIntersections.Count = 0 Then
+                    ' No intersections, add as-is
+                    result.Add(path)
+                Else
+                    ' Split this path
+                    Dim splitPath As New BezierPath() With {
+                .PathIndex = pathIdx,
+                .IsClosed = path.IsClosed
+            }
+
+                    Dim newSegments As New List(Of BezierSegment)
+
+                    For segIdx As Integer = 0 To path.Segments.Count - 1
+                        Dim segment = path.Segments(segIdx)
+
+                        ' Find intersections on this segment
+                        Dim segIntersections = pathIntersections.Where(Function(pi)
+                                                                           Dim isPath1 = (pi.Path1Index = pathIdx)
+                                                                           Dim segIndex = If(isPath1, pi.Segment1Index, pi.Segment2Index)
+                                                                           Return segIndex = segIdx
+                                                                       End Function).ToList()
+
+                        If segIntersections.Count = 0 Then
+                            newSegments.Add(segment.Clone())
+                        Else
+                            ' Sort by t parameter
+                            segIntersections.Sort(Function(a, b)
+                                                      Dim tA = If(a.Path1Index = pathIdx, a.T1, a.T2)
+                                                      Dim tB = If(b.Path1Index = pathIdx, b.T1, b.T2)
+                                                      Return tA.CompareTo(tB)
+                                                  End Function)
+
+                            ' Split segment at each intersection
+                            Dim currentSeg = segment.Clone()
+                            Dim lastT As Double = 0.0
+
+                            For Each si In segIntersections
+                                Dim t = If(si.Path1Index = pathIdx, si.T1, si.T2)
+
+                                If t > 0.001 AndAlso t < 0.999 Then
+                                    Dim relT = (t - lastT) / (1.0 - lastT)
+                                    Dim split = SplitSegment(currentSeg, relT)
+                                    newSegments.Add(split.Item1)
+                                    currentSeg = split.Item2
+                                    lastT = t
+                                End If
+                            Next
+
+                            newSegments.Add(currentSeg)
+                        End If
+                    Next
+
+                    splitPath.Segments = newSegments
+                    result.Add(splitPath)
+                End If
+            Next
+
+            Return result
         End Function
 #End Region
 
