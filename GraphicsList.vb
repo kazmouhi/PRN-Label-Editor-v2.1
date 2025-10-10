@@ -1,4 +1,4 @@
-﻿Imports System
+Imports System
 Imports System.Collections
 Imports System.Collections.Generic
 Imports System.Data
@@ -2996,39 +2996,35 @@ Namespace Draw
         ''' <summary>
         ''' Performs a punch out operation (first object minus all others)
         ''' </summary>
-        Private Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
+        ''' <summary>
+        ''' Returns the *outer silhouette* (union) of every shape in the list.
+        ''' Internal edges are removed – exactly the SVG you posted.
+        ''' (Name kept as MergePathsPunchOut for compatibility.)
+        ''' </summary>
+        Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
+
             If drawObjects.Count = 0 Then Return New List(Of PathCommands)
-        
+            If drawObjects.Count = 1 Then Return drawObjects(0).PathCommands
+
             '1.  union of everything
             Dim total As List(Of PathCommands) = drawObjects(0).PathCommands
             For i As Integer = 1 To drawObjects.Count - 1
                 total = UnionTwoPaths(total, drawObjects(i).PathCommands)
             Next
-        
-            '2.  convert to Bézier paths
+
+            '2.  dissolve inner edges → keep only outermost shell
             Dim shells As List(Of BezierPath) = ConvertToBezierPaths(total)
-            If shells.Count = 0 Then Return total          ' should never happen, but be safe
-        
-            '3.  keep only outermost paths
-            Dim outerOnly As New List(Of BezierPath)
-            For Each cand In shells
-                Dim isInside As Boolean = False
-                For Each other In shells
-                    If cand Is other Then Continue For
-                    If CompletelyContainsPath(other, cand) Then
-                        isInside = True
-                        Exit For
-                    End If
-                Next
-                If Not isInside Then outerOnly.Add(cand)
-            Next
-        
-            '4.  edge-case: every path was inside another → keep the first one
-            If outerOnly.Count = 0 Then outerOnly.Add(shells(0))
-        
-            '5.  convert back to PathCommands
+            Dim outerOnly = shells.Where(Function(p) p.IsClosed AndAlso
+                                            Not shells.Any(Function(q) q IsNot p AndAlso
+                                                                        CompletelyContainsPath(q, p))).ToList()
+            '3.  guarantee at least one path
+            If outerOnly.Count = 0 AndAlso shells.Count > 0 Then outerOnly.Add(shells(0))
+
+            '4.  back to PathCommands
             Return ConvertToPathCommandsImproved(outerOnly)
         End Function
+
+
 
 
         ''' <summary>
@@ -3997,7 +3993,7 @@ Namespace Draw
                     result.Add(New PathCommands(prevCmd.P, Nothing, Nothing, "L"c))
                 ElseIf cmd.Pc = "C"c Then
                     ' Reverse Bézier curve - swap control points
-                    result.Add(New PathCommands(prevCmd.P, cmd.B2, cmd.B1, "C"c))
+                    result.Add(New PathCommands(prevCmd.P, cmd.b2, cmd.b1, "C"c))
                 ElseIf cmd.Pc = "Z"c Then
                     ' Don't add Z yet, will add at the end
                 End If
@@ -4008,9 +4004,9 @@ Namespace Draw
 
             Return result
         End Function
+        '----  helper ----
         Private Function CompletelyContainsPath(outer As BezierPath, inner As BezierPath) As Boolean
-            If Not outer.IsClosed Then Return False
-            Return ContainsPoint(outer, inner.Segments(0).StartPoint)
+            Return outer.IsClosed AndAlso ContainsPoint(outer, inner.Segments(0).StartPoint)
         End Function
 
 #End Region
