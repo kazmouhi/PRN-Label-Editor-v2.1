@@ -3056,45 +3056,69 @@ Namespace Draw
 
             ' --- Step 3: extract outline pixels (white->black transition) ---
             Dim outlinePts As New List(Of PointF)
-            For y As Integer = 1 To bmp.Height - 2
-                For x As Integer = 1 To bmp.Width - 2
-                    Dim c As Color = bmp.GetPixel(x, y)
-                    If c.R > 128 Then
-                        ' check if any neighbor is black → edge pixel
-                        Dim isEdge As Boolean = False
-                        For dy = -1 To 1
-                            For dx = -1 To 1
-                                If dx <> 0 OrElse dy <> 0 Then
-                                    Dim n = bmp.GetPixel(x + dx, y + dy)
-                                    If n.R < 128 Then
-                                        isEdge = True
-                                        Exit For
-                                    End If
-                                End If
-                            Next
-                            If isEdge Then Exit For
-                        Next
-                        If isEdge Then
-                            outlinePts.Add(New PointF(x / scale + allBounds.Left, y / scale + allBounds.Top))
-                        End If
+            Dim visited(bmp.Width - 1, bmp.Height - 1) As Boolean
+
+            ' Helper function to check pixel color safely
+            Dim IsWhitePixel As Func(Of Integer, Integer, Boolean) = Function(x As Integer, y As Integer) As Boolean
+                                                                         If x < 0 OrElse y < 0 OrElse x >= bmp.Width OrElse y >= bmp.Height Then Return False
+                                                                         Return bmp.GetPixel(x, y).R > 128
+                                                                     End Function
+
+            ' Find starting point (first white pixel)
+            Dim startX As Integer = -1, startY As Integer = -1
+            For y As Integer = 0 To bmp.Height - 1
+                For x As Integer = 0 To bmp.Width - 1
+                    If IsWhitePixel(x, y) Then
+                        startX = x : startY = y
+                        Exit For
                     End If
                 Next
+                If startX <> -1 Then Exit For
             Next
 
-            If outlinePts.Count = 0 Then Return New List(Of PathCommands)
+            If startX <> -1 Then
+                Dim dirs As Point() = {
+            New Point(1, 0), New Point(1, 1), New Point(0, 1), New Point(-1, 1),
+            New Point(-1, 0), New Point(-1, -1), New Point(0, -1), New Point(1, -1)
+        }
 
-            ' --- Step 4: approximate to polygon path ---
-            ' sort points roughly clockwise (simple centroid method)
-            Dim cx As Double = outlinePts.Average(Function(p) p.X)
-            Dim cy As Double = outlinePts.Average(Function(p) p.Y)
-            Dim ordered = outlinePts.OrderBy(Function(p) Math.Atan2(p.Y - cy, p.X - cx)).ToList()
+                Dim px = startX, py = startY
+                Dim dirIndex As Integer = 0
+                Dim loopSafety As Integer = 0
 
+                Do
+                    outlinePts.Add(New PointF(px / scale + allBounds.Left, py / scale + allBounds.Top))
+                    visited(px, py) = True
+
+                    ' find next neighbor clockwise
+                    Dim foundNext As Boolean = False
+                    For i = 0 To 7
+                        Dim idx As Integer = (dirIndex + i) Mod 8
+                        Dim nx As Integer = px + dirs(idx).X
+                        Dim ny As Integer = py + dirs(idx).Y
+                        If IsWhitePixel(nx, ny) AndAlso Not visited(nx, ny) Then
+                            px = nx : py = ny : dirIndex = (idx + 6) Mod 8 ' rotate search
+                            foundNext = True
+                            Exit For
+                        End If
+                    Next
+
+                    If Not foundNext Then Exit Do
+
+                    loopSafety += 1
+                    If loopSafety > 10000 Then Exit Do
+                Loop Until (px = startX AndAlso py = startY)
+            End If
+
+            ' --- Step 4: build PathCommands ---
             Dim result As New List(Of PathCommands)
-            result.Add(New PathCommands(ordered(0), Nothing, Nothing, "M"c))
-            For i = 1 To ordered.Count - 1
-                result.Add(New PathCommands(ordered(i), Nothing, Nothing, "L"c))
-            Next
-            result.Add(New PathCommands(ordered(0), Nothing, Nothing, "Z"c))
+            If outlinePts.Count > 0 Then
+                result.Add(New PathCommands(outlinePts(0), Nothing, Nothing, "M"c))
+                For i = 1 To outlinePts.Count - 1
+                    result.Add(New PathCommands(outlinePts(i), Nothing, Nothing, "L"c))
+                Next
+                result.Add(New PathCommands(outlinePts(0), Nothing, Nothing, "Z"c))
+            End If
 
             Return result
         End Function
