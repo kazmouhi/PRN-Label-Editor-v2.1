@@ -2,15 +2,16 @@ Imports System
 Imports System.Collections
 Imports System.Collections.Generic
 Imports System.Data
-Imports ClipperLib
 Imports System.Diagnostics
 Imports System.Drawing
 Imports System.Drawing.Drawing2D
+Imports System.Drawing.Imaging
 Imports System.Net
 'Imports System.Linq
 Imports System.Reflection
 Imports System.Runtime.InteropServices
 Imports System.Windows.Forms
+Imports ClipperLib
 Imports Draw
 Imports SVGLib
 
@@ -3011,54 +3012,93 @@ Namespace Draw
         ''' Computes the outer outline (union boundary) of selected shapes.
         ''' Works with .NET Framework; no ClipperLib or Region.GetOutline required.
         ''' </summary>
+
+
         Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
             If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then
                 Return New List(Of PathCommands)
             End If
 
-            Dim unionRegion As Region = Nothing
-
-            ' Combine all shapes as regions
+            ' --- Step 1: compute overall bounds ---
+            Dim allBounds As RectangleF = RectangleF.Empty
+            Dim paths As New List(Of GraphicsPath)
             For Each obj In drawObjects
                 Dim gp As GraphicsPath = ConvertToGraphicsPath(obj)
-                If gp IsNot Nothing Then
-                    If unionRegion Is Nothing Then
-                        unionRegion = New Region(gp)
+                If gp IsNot Nothing AndAlso Not gp.GetBounds().IsEmpty Then
+                    paths.Add(gp)
+                    If allBounds.IsEmpty Then
+                        allBounds = gp.GetBounds()
                     Else
-                        unionRegion.Union(gp)
+                        allBounds = RectangleF.Union(allBounds, gp.GetBounds())
                     End If
                 End If
             Next
 
-            If unionRegion Is Nothing Then Return New List(Of PathCommands)
+            If paths.Count = 0 Then Return New List(Of PathCommands)
 
-            ' Get region outline manually using Region.GetRegionScans()
-            Dim outline As New List(Of PathCommands)
-            Dim rects() As RectangleF = unionRegion.GetRegionScans(New Matrix())
+            ' --- Step 2: rasterize union into bitmap mask ---
+            Dim scale As Integer = 4 ' controls precision
+            Dim bmpW As Integer = CInt(allBounds.Width * scale) + 4
+            Dim bmpH As Integer = CInt(allBounds.Height * scale) + 4
+            Dim bmp As New Bitmap(bmpW, bmpH, PixelFormat.Format24bppRgb)
 
-            ' Approximate outline by connecting the bounding edges
-            If rects IsNot Nothing AndAlso rects.Length > 0 Then
-                Dim bounds As RectangleF = rects(0)
-                For Each r In rects
-                    bounds = RectangleF.Union(bounds, r)
+            Using g = Graphics.FromImage(bmp)
+                g.Clear(Color.Black)
+                g.SmoothingMode = Drawing2D.SmoothingMode.AntiAlias
+                g.TranslateTransform(-allBounds.Left * scale, -allBounds.Top * scale)
+                g.ScaleTransform(scale, scale)
+                Using fillBrush As New SolidBrush(Color.White)
+                    For Each gp In paths
+                        g.FillPath(fillBrush, gp)
+                    Next
+                End Using
+            End Using
+
+            ' --- Step 3: extract outline pixels (white->black transition) ---
+            Dim outlinePts As New List(Of PointF)
+            For y As Integer = 1 To bmp.Height - 2
+                For x As Integer = 1 To bmp.Width - 2
+                    Dim c As Color = bmp.GetPixel(x, y)
+                    If c.R > 128 Then
+                        ' check if any neighbor is black → edge pixel
+                        Dim isEdge As Boolean = False
+                        For dy = -1 To 1
+                            For dx = -1 To 1
+                                If dx <> 0 OrElse dy <> 0 Then
+                                    Dim n = bmp.GetPixel(x + dx, y + dy)
+                                    If n.R < 128 Then
+                                        isEdge = True
+                                        Exit For
+                                    End If
+                                End If
+                            Next
+                            If isEdge Then Exit For
+                        Next
+                        If isEdge Then
+                            outlinePts.Add(New PointF(x / scale + allBounds.Left, y / scale + allBounds.Top))
+                        End If
+                    End If
                 Next
+            Next
 
-                Dim pts As PointF() = {
-            New PointF(bounds.Left, bounds.Top),
-            New PointF(bounds.Right, bounds.Top),
-            New PointF(bounds.Right, bounds.Bottom),
-            New PointF(bounds.Left, bounds.Bottom)
-        }
+            If outlinePts.Count = 0 Then Return New List(Of PathCommands)
 
-                outline.Add(New PathCommands(pts(0), Nothing, Nothing, "M"c))
-                For i = 1 To pts.Length - 1
-                    outline.Add(New PathCommands(pts(i), Nothing, Nothing, "L"c))
-                Next
-                outline.Add(New PathCommands(pts(0), Nothing, Nothing, "Z"c))
-            End If
+            ' --- Step 4: approximate to polygon path ---
+            ' sort points roughly clockwise (simple centroid method)
+            Dim cx As Double = outlinePts.Average(Function(p) p.X)
+            Dim cy As Double = outlinePts.Average(Function(p) p.Y)
+            Dim ordered = outlinePts.OrderBy(Function(p) Math.Atan2(p.Y - cy, p.X - cx)).ToList()
 
-            Return outline
+            Dim result As New List(Of PathCommands)
+            result.Add(New PathCommands(ordered(0), Nothing, Nothing, "M"c))
+            For i = 1 To ordered.Count - 1
+                result.Add(New PathCommands(ordered(i), Nothing, Nothing, "L"c))
+            Next
+            result.Add(New PathCommands(ordered(0), Nothing, Nothing, "Z"c))
+
+            Return result
         End Function
+
 
         ''' <summary>
         ''' Performs an intersection operation on multiple paths
