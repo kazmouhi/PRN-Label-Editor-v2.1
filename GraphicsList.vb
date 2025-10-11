@@ -1525,41 +1525,42 @@ Namespace Draw
         End Function
 
 
+        ''' <summary>
+        ''' Returns the outline (outer boundary only) of the union of all
+        ''' selected shapes.  Holes and inner edges are discarded.
+        ''' </summary>
         ''' ------------------------------------------------------------------
         ''' Returns the outer outline of the UNION of the supplied shapes.
-        ''' Holes and inner edges are removed.  Works in 32- or 64-bit.
+        ''' Holes and inner edges are removed.  Uses only C3DDraw/C3DSVG.
         ''' ------------------------------------------------------------------
         Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
+            If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then Return New List(Of PathCommands)
 
-            If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then
-                Return New List(Of PathCommands)
-            End If
-
-            ' 1.  convert every shape → GraphicsPath
-            Dim paths As New List(Of GraphicsPath)
+            ' 1.  convert every shape → Clipper paths
+            Dim clipperPaths As New List(Of List(Of IntPoint))()
             For Each obj In drawObjects
-                Dim gp = ConvertToGraphicsPath(obj)   'your existing helper
-                If gp IsNot Nothing AndAlso gp.PointCount > 0 Then
-                    paths.Add(gp)
-                End If
+                clipperPaths.AddRange(ObjectToClipper(obj))
             Next
-            If paths.Count = 0 Then Return New List(Of PathCommands)
+            If clipperPaths.Count = 0 Then Return New List(Of PathCommands)
 
-            ' 2.  boolean-union with System.Drawing.Region
-            Dim united As New Region(paths(0))
-            For i = 1 To paths.Count - 1
-                united.Union(paths(i))
+            ' 2.  boolean union with Clipper
+            Dim solution As New List(Of List(Of IntPoint))()
+            Dim c As New Clipper()
+            c.AddPaths(clipperPaths, PolyType.ptSubject, True)
+            c.Execute(ClipType.ctUnion, solution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
+
+            ' 3.  keep only the outer loop (largest area)
+            If solution.Count = 0 Then Return New List(Of PathCommands)
+            solution.Sort(Function(a, b) Math.Abs(Clipper.Area(b)).CompareTo(Math.Abs(Clipper.Area(a))))
+            Dim outerLoop As List(Of IntPoint) = solution(0)
+
+            ' 4.  convert back to PathCommands (closed path)
+            Dim cmds As New List(Of PathCommands)
+            For i = 0 To outerLoop.Count - 1
+                Dim p As PointF = ToPointF(outerLoop(i))
+                cmds.Add(New PathCommands(p, Nothing, Nothing, If(i = 0, "M"c, "L"c)))
             Next
-
-            ' 3.  Region → GraphicsPath (outer boundary only)  ––  32-bit SAFE
-            Dim outline As GraphicsPath = RegionToOutline(united)
-
-            ' 4.  GraphicsPath → PathCommands
-            Dim cmds As List(Of PathCommands) = ConvertGraphicsPathToCommands(outline)
-
-            ' 5.  tidy up
-            For Each p In paths : p.Dispose() : Next
-            united.Dispose() : outline.Dispose()
+            cmds.Add(New PathCommands(cmds(0).P, Nothing, Nothing, "Z"c))
 
             Return cmds
         End Function
@@ -2201,6 +2202,47 @@ Namespace Draw
 
 #Region "Helper Methods"
 
+        ' DrawObject → Clipper paths (one closed path per sub-path)
+        Private Shared Function ObjectToClipper(obj As DrawObject) As List(Of List(Of IntPoint))
+            Dim res As New List(Of List(Of IntPoint))()
+            If obj.PathCommands Is Nothing Then Return res
+
+            Dim cur As New List(Of IntPoint)()
+            For Each cmd In obj.PathCommands
+                Select Case cmd.Pc
+                    Case "M"c
+                        If cur.Count > 0 Then res.Add(cur)
+                        cur = New List(Of IntPoint)()
+                        cur.Add(ToIntPoint(cmd.P))
+                    Case "L"c
+                        cur.Add(ToIntPoint(cmd.P))
+                    Case "C"c
+                        ' flatten cubic Bézier to 10 line segments
+                        For t = 0 To 9
+                            Dim pt = BezierPoint(cmd.P, cmd.b1, cmd.b2, cmd.P, t / 9)
+                            cur.Add(ToIntPoint(pt))
+                        Next
+                    Case "Z"c
+                        If cur.Count > 2 Then res.Add(cur)
+                        cur = New List(Of IntPoint)()
+                End Select
+            Next
+            If cur.Count > 2 Then res.Add(cur)
+            Return res
+        End Function
+
+        ' helpers
+        Private Shared Function ToIntPoint(p As PointF) As IntPoint
+            Return New IntPoint(CLng(p.X * 1000), CLng(p.Y * 1000))
+        End Function
+        Private Shared Function ToPointF(p As IntPoint) As PointF
+            Return New PointF(CSng(p.X) / 1000.0F, CSng(p.Y) / 1000.0F)
+        End Function
+        Private Shared Function BezierPoint(a As PointF, b As PointF, c As PointF, d As PointF, t As Single) As PointF
+            Dim mt = 1 - t
+            Return New PointF(mt * mt * mt * a.X + 3 * mt * mt * t * b.X + 3 * mt * t * t * c.X + t * t * t * d.X,
+                      mt * mt * mt * a.Y + 3 * mt * mt * t * b.Y + 3 * mt * t * t * c.Y + t * t * t * d.Y)
+        End Function
 
         ''' <summary>
         ''' Extracts the outer boundary from a region by getting its bounds and creating a path
@@ -3753,114 +3795,6 @@ Namespace Draw
 
 #Region "Path Classes"
 
-
-        Public Class PathUnion
-
-            Public Shared Function UnionOutline(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
-                If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then Return New List(Of PathCommands)
-
-                ' Combine all shapes into one region
-                Dim region As Region = Nothing
-                For Each obj In drawObjects
-                    Dim gp As GraphicsPath = ConvertToGraphicsPath(obj)
-                    If gp Is Nothing Then Continue For
-
-                    If region Is Nothing Then
-                        region = New Region(gp)
-                    Else
-                        region.Union(gp)
-                    End If
-                Next
-
-                If region Is Nothing Then Return New List(Of PathCommands)
-
-                ' Convert region back to GraphicsPath outline
-                Dim outline As GraphicsPath = RegionToOutline(region)
-
-                ' Convert that GraphicsPath to List(Of PathCommands)
-                Return ConvertGraphicsPathToCommands(outline)
-            End Function
-
-
-            ' Convert DrawObject.PathCommands → GraphicsPath
-            Private Shared Function ConvertToGraphicsPath(obj As DrawObject) As GraphicsPath
-                Dim gp As New GraphicsPath()
-                If obj.PathCommands Is Nothing Then Return gp
-
-                Dim currentPoint As PointF = PointF.Empty
-                Dim startPoint As PointF = PointF.Empty
-                Dim hasStart As Boolean = False
-
-                For Each cmd In obj.PathCommands
-                    Select Case cmd.Pc
-                        Case "M"c
-                            currentPoint = cmd.P
-                            startPoint = cmd.P
-                            hasStart = True
-                        Case "L"c
-                            gp.AddLine(currentPoint, cmd.P)
-                            currentPoint = cmd.P
-                        Case "C"c
-                            gp.AddBezier(currentPoint, cmd.b1, cmd.b2, cmd.P)
-                            currentPoint = cmd.P
-                        Case "Z"c, "z"c
-                            If hasStart Then gp.CloseFigure()
-                    End Select
-                Next
-
-                Return gp
-            End Function
-
-
-            ' Convert Region → GraphicsPath representing the outline
-            Private Shared Function RegionToOutline(r As Region) As GraphicsPath
-                Dim gp As New GraphicsPath()
-                Using g As Graphics = Graphics.FromImage(New Bitmap(1, 1))
-                    Dim rects() As RectangleF = r.GetRegionScans(New Matrix())
-                    gp.AddRectangles(rects)
-                End Using
-                Return gp
-            End Function
-
-
-            ' Convert GraphicsPath → List(Of PathCommands)
-            Private Shared Function ConvertGraphicsPathToCommands(gp As GraphicsPath) As List(Of PathCommands)
-                Dim result As New List(Of PathCommands)
-                If gp Is Nothing OrElse gp.PointCount = 0 Then Return result
-
-                Dim pts() As PointF = gp.PathPoints
-                Dim types() As Byte = gp.PathTypes
-
-                Dim firstPoint As PointF = PointF.Empty
-                Dim started As Boolean = False
-
-                For i As Integer = 0 To pts.Length - 1
-                    Dim t As Byte = types(i)
-                    Dim p As PointF = pts(i)
-
-                    If (t And PathPointType.Start) = PathPointType.Start Then
-                        result.Add(New PathCommands(p, Nothing, Nothing, "M"c))
-                        firstPoint = p
-                        started = True
-                    ElseIf (t And PathPointType.Line) = PathPointType.Line Then
-                        result.Add(New PathCommands(p, Nothing, Nothing, "L"c))
-                    ElseIf (t And PathPointType.Bezier) = PathPointType.Bezier Then
-                        ' Basic bezier simplification (control points unknown here)
-                        result.Add(New PathCommands(p, Nothing, Nothing, "L"c))
-                    End If
-
-                    If (t And PathPointType.CloseSubpath) = PathPointType.CloseSubpath AndAlso started Then
-                        result.Add(New PathCommands(firstPoint, Nothing, Nothing, "Z"c))
-                    End If
-                Next
-
-                Return result
-            End Function
-        End Class
-
-
-
-
         ''' <summary>
         ''' Represents a Bézier curve segment with all control points
         ''' </summary>
@@ -4014,54 +3948,7 @@ Namespace Draw
 
 #End Region
 
-        '----------------------------------------------------------
-        ' Convert Region → single GraphicsPath (outer boundary)
-        '----------------------------------------------------------
-        Private Shared Function RegionToOutline(r As Region) As GraphicsPath
-            ' We simply ask the Region for its **outline path** via RegionData.
-            ' This works in 32- and 64-bit and never calls GetRegionScans.
-            Dim gp As New GraphicsPath()
-            gp.AddRectangle(r.GetBounds(Nothing))   'fallback – always succeeds
-            Return gp
-        End Function
 
-        '----------------------------------------------------------
-        ' GraphicsPath → List(Of PathCommands)
-        '----------------------------------------------------------
-        Private Shared Function ConvertGraphicsPathToCommands(gp As GraphicsPath) As List(Of PathCommands)
-            Dim cmds As New List(Of PathCommands)
-            If gp.PointCount = 0 Then Return cmds
-
-            Dim pts() As PointF = gp.PathPoints
-            Dim types() As Byte = gp.PathTypes
-
-            Dim first As PointF = PointF.Empty
-            Dim started As Boolean = False
-
-            For i As Integer = 0 To pts.Length - 1
-                Dim t As Byte = types(i)
-
-                If (t And PathPointType.Start) <> 0 Then
-                    first = pts(i)
-                    cmds.Add(New PathCommands(first, Nothing, Nothing, "M"c))
-                    started = True
-
-                ElseIf (t And PathPointType.Bezier3) <> 0 Then
-                    ' cubic Bézier – next two points are controls
-                    cmds.Add(New PathCommands(pts(i + 2), pts(i), pts(i + 1), "C"c))
-                    i += 2
-
-                ElseIf (t And PathPointType.Line) <> 0 Then
-                    cmds.Add(New PathCommands(pts(i), Nothing, Nothing, "L"c))
-                End If
-
-                If (t And PathPointType.CloseSubpath) <> 0 AndAlso started Then
-                    cmds.Add(New PathCommands(first, Nothing, Nothing, "Z"c))
-                End If
-            Next
-
-            Return cmds
-        End Function
 
     End Class
 
