@@ -2,8 +2,9 @@ See the end of this message for details on invoking
 just-in-time (JIT) debugging instead of this dialog box.
 
 ************** Exception Text **************
-System.IO.FileNotFoundException: Could not load file or assembly 'clipper, Version=0.0.1.0, Culture=neutral, PublicKeyToken=null' or one of its dependencies. The system cannot find the file specified.
-File name: 'clipper, Version=0.0.1.0, Culture=neutral, PublicKeyToken=null'
+System.ArgumentOutOfRangeException: Index was out of range. Must be non-negative and less than the size of the collection.
+Parameter name: index
+   at System.ThrowHelper.ThrowArgumentOutOfRangeException(ExceptionArgument argument, ExceptionResource resource)
    at C3DGList.Draw.GraphicsList.MergePathsPunchOut(List`1 drawObjects)
    at C3DGList.Draw.GraphicsList.MergeSelected(Int32 MergeType)
    at SSVecDraw.frmMain.YsiRVQRvtW(Object  , EventArgs  )
@@ -14,12 +15,6 @@ File name: 'clipper, Version=0.0.1.0, Culture=neutral, PublicKeyToken=null'
    at System.Windows.Forms.ButtonBase.WndProc(Message& m)
    at System.Windows.Forms.Button.WndProc(Message& m)
    at System.Windows.Forms.NativeWindow.Callback(IntPtr hWnd, Int32 msg, IntPtr wparam, IntPtr lparam)
-
-WRN: Assembly binding logging is turned OFF.
-To enable assembly bind failure logging, set the registry value [HKLM\Software\Microsoft\Fusion!EnableLog] (DWORD) to 1.
-Note: There is some performance penalty associated with assembly bind failure logging.
-To turn this feature off, remove the registry value [HKLM\Software\Microsoft\Fusion!EnableLog].
-
 
 
 ************** Loaded Assemblies **************
@@ -39,3 +34,151 @@ Microsoft.VisualBasic
     CodeBase: file:///C:/WINDOWS/Microsoft.Net/assembly/GAC_MSIL/Microsoft.VisualBasic/v4.0_10.0.0.0__b03f5f7f11d50a3a/Microsoft.VisualBasic.dll
 ----------------------------------------
 System
+    Assembly Version: 4.0.0.0
+    Win32 Version: 4.8.9310.0 built by: NET481REL1LAST_C
+    CodeBase: file:///C:/WINDOWS/Microsoft.Net/assembly/GAC_MSIL/System/v4.0_4.0.0.0__b77a5c561934e089/System.dll
+----------------------------------------
+System.Core
+    Assembly Version: 4.0.0.0
+    Win32 Version: 4.8.9297.0 built by: NET481REL1LAST_C
+    CodeBase: file:///C:/WINDOWS/Microsoft.Net/assembly/GAC_MSIL/System.Core/v4.0_4.0.0.0__b77a5c561934e089/System.Core.dll
+----------------------------------------
+System.Windows.Forms
+    Assembly Version: 4.0.0.0
+    Win32 Version: 4.8.9251.0 built by: NET481REL1LAST_C
+    CodeBase: file:///C:/WINDOWS/Microsoft.Net/assembly/GAC_MSIL/System.Windows.Forms/v4.0_4.0.0.0__b77a5c561934e089/System.Windows.Forms.dll
+----------------------------------------
+System.Drawing
+    Assembly Version: 4.0.0.0
+    Win32 Version: 4.8.9037.0 built by: NET481REL1
+    CodeBase: file:///C:/WINDOWS/Microsoft.Net/assembly/GAC_MSIL/System.Drawing/v4.0_4.0.0.0__b03f5f7f11d50a3a/System.Drawing.dll
+----------------------------------------
+System.Configuration
+    Assembly Version: 4.0.0.0
+    Win32 Version: 4.8.9037.0 built by: NET481REL1
+    CodeBase: file:///C:/WINDOWS/Microsoft.Net/assembly/GAC_MSIL/System.Configuration/v4.0_4.0.0.0__b03f5f7f11d50a3a/System.Configuration.dll
+----------------------------------------
+System.Xml
+    Assembly Version: 4.0.0.0
+    Win32 Version: 4.8.9037.0 built by: NET481REL1
+    CodeBase: file:///C:/WINDOWS/Microsoft.Net/assembly/GAC_MSIL/System.Xml/v4.0_4.0.0.0__b77a5c561934e089/System.Xml.dll
+----------------------------------------
+System.Runtime.Remoting
+    Assembly Version: 4.0.0.0
+    Win32 Version: 4.8.9214.0 built by: NET481REL1LAST_B
+    CodeBase: file:///C:/WINDOWS/Microsoft.Net/assembly/GAC_MSIL/System.Runtime.Remoting/v4.0_4.0.0.0__b77a5c561934e089/System.Runtime.Remoting.dll
+----------------------------------------
+SButton
+    Assembly Version: 1.0.7518.4360
+    Win32 Version: 1.0.7518.4360
+    CodeBase: file:///C:/CNC3D%20Commander/SButton.DLL
+----------------------------------------
+SSVecDraw
+    Assembly Version: 1.0.0.0
+    Win32 Version: 1.0.0.0
+    CodeBase: file:///C:/CNC3D%20Commander/SSVecDraw.EXE
+----------------------------------------
+C3DDraw
+    Assembly Version: 1.0.1.1
+    Win32 Version: 1.0.1.1
+    CodeBase: file:///C:/CNC3D%20Commander/C3DDraw.DLL
+----------------------------------------
+ssccreate
+    Assembly Version: 1.0.0.0
+    Win32 Version: 1.0.0.0
+    CodeBase: file:///C:/CNC3D%20Commander/ssccreate.DLL
+----------------------------------------
+C3DGTools
+    Assembly Version: 1.0.0.0
+    Win32 Version: 1.0.0.0
+    CodeBase: file:///C:/CNC3D%20Commander/C3DGTools.DLL
+----------------------------------------
+C3DGPC
+    Assembly Version: 1.0.0.0
+    Win32 Version: 1.0.0.0
+    CodeBase: file:///C:/CNC3D%20Commander/C3DGPC.DLL
+----------------------------------------
+SSCViewer
+    Assembly Version: 1.0.9363.29990
+    Win32 Version: 1.0.9363.29990
+    CodeBase: file:///C:/CNC3D%20Commander/SSCViewer.DLL
+----------------------------------------
+SSCDat
+    Assembly Version: 1.0.0.0
+    Win32 Version: 1.0.0.0
+    CodeBase: file:///C:/CNC3D%20Commander/SSCDat.DLL
+----------------------------------------
+System.Data
+    Assembly Version: 4.0.0.0
+    Win32 Version: 4.8.9214.0 built by: NET481REL1LAST_B
+    CodeBase: file:///C:/WINDOWS/Microsoft.Net/assembly/GAC_64/System.Data/v4.0_4.0.0.0__b77a5c561934e089/System.Data.dll
+----------------------------------------
+C3DGList
+    Assembly Version: 1.0.0.0
+    Win32 Version: 1.0.0.0
+    CodeBase: file:///C:/CNC3D%20Commander/C3DGList.DLL
+----------------------------------------
+CSTrackBar
+    Assembly Version: 1.0.9.0
+    Win32 Version: 1.0.9.0
+    CodeBase: file:///C:/CNC3D%20Commander/CSTrackBar.DLL
+----------------------------------------
+SSCView
+    Assembly Version: 1.0.0.0
+    Win32 Version: 1.0.0.0
+    CodeBase: file:///C:/CNC3D%20Commander/SSCView.DLL
+----------------------------------------
+C3DWS
+    Assembly Version: 1.0.0.0
+    Win32 Version: 1.0.0.0
+    CodeBase: file:///C:/CNC3D%20Commander/C3DWS.DLL
+----------------------------------------
+ZylSerialPort
+    Assembly Version: 1.68.6340.937
+    Win32 Version: 1.68.6340.937
+    CodeBase: file:///C:/CNC3D%20Commander/ZylSerialPort.DLL
+----------------------------------------
+Accessibility
+    Assembly Version: 4.0.0.0
+    Win32 Version: 4.8.9037.0 built by: NET481REL1
+    CodeBase: file:///C:/WINDOWS/Microsoft.Net/assembly/GAC_MSIL/Accessibility/v4.0_4.0.0.0__b03f5f7f11d50a3a/Accessibility.dll
+----------------------------------------
+C3DPendant
+    Assembly Version: 1.0.0.0
+    Win32 Version: 1.0.0.0
+    CodeBase: file:///C:/CNC3D%20Commander/C3DPendant.DLL
+----------------------------------------
+System.Management
+    Assembly Version: 4.0.0.0
+    Win32 Version: 4.8.9037.0 built by: NET481REL1
+    CodeBase: file:///C:/WINDOWS/Microsoft.Net/assembly/GAC_MSIL/System.Management/v4.0_4.0.0.0__b03f5f7f11d50a3a/System.Management.dll
+----------------------------------------
+System.Numerics
+    Assembly Version: 4.0.0.0
+    Win32 Version: 4.8.9037.0 built by: NET481REL1
+    CodeBase: file:///C:/WINDOWS/Microsoft.Net/assembly/GAC_MSIL/System.Numerics/v4.0_4.0.0.0__b77a5c561934e089/System.Numerics.dll
+----------------------------------------
+C3DSVG
+    Assembly Version: 0.10.9405.17917
+    Win32 Version: 0.10.9405.17917
+    CodeBase: file:///C:/CNC3D%20Commander/C3DSVG.DLL
+----------------------------------------
+
+************** JIT Debugging **************
+To enable just-in-time (JIT) debugging, the .config file for this
+application or computer (machine.config) must have the
+jitDebugging value set in the system.windows.forms section.
+The application must also be compiled with debugging
+enabled.
+
+For example:
+
+<configuration>
+    <system.windows.forms jitDebugging="true" />
+</configuration>
+
+When JIT debugging is enabled, any unhandled exception
+will be sent to the JIT debugger registered on the computer
+rather than be handled by this dialog box.
+
+
