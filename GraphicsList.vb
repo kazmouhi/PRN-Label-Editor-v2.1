@@ -3037,45 +3037,45 @@ Namespace Draw
             If drawObjects.Count = 1 Then Return drawObjects(0).PathCommands
 
             Try
-                ' For punch out operation, we want to combine all shapes into one outer boundary
-                ' This is essentially a union that removes internal edges
+                MessageBox.Show($"MergePathsPunchOut: Processing {drawObjects.Count} objects")
 
-                ' Convert all objects to paths first
-                Dim allPaths As New List(Of List(Of PathCommands))
+                ' Convert all objects to GraphicsPath for boolean operations
+                Dim paths As New List(Of GraphicsPath)
                 For Each obj In drawObjects
-                    allPaths.Add(obj.PathCommands)
+                    Dim gp As GraphicsPath = ConvertToGraphicsPath(obj)
+                    If gp IsNot Nothing AndAlso gp.PointCount > 0 Then
+                        paths.Add(gp)
+                    End If
                 Next
 
-                ' Use a simpler approach: combine all paths and extract the outer boundary
-                Dim combinedPath As New List(Of PathCommands)
-
-                ' Start with the first path
-                If allPaths.Count > 0 Then
-                    combinedPath.AddRange(allPaths(0))
+                If paths.Count = 0 Then
+                    MessageBox.Show("No valid paths created")
+                    Return drawObjects(0).PathCommands
                 End If
 
-                ' Union with remaining paths using the improved union function
-                For i As Integer = 1 To allPaths.Count - 1
-                    combinedPath = UnionTwoPaths(combinedPath, allPaths(i))
+                ' Use Region to perform the union operation
+                Dim unionRegion As New Region(paths(0))
+
+                For i As Integer = 1 To paths.Count - 1
+                    unionRegion.Union(paths(i))
                 Next
 
-                ' Convert to BezierPath for boundary extraction
-                Dim bezierPaths = ConvertToBezierPaths(combinedPath)
+                ' Convert the union region back to path commands
+                Dim resultPath As List(Of PathCommands) = ConvertRegionToPathCommands(unionRegion)
 
-                If bezierPaths.Count = 0 Then
-                    ' Fallback: try direct boundary tracing
-                    Return ExtractOuterBoundaryDirect(drawObjects)
-                End If
+                ' Clean up
+                For Each path In paths
+                    path.Dispose()
+                Next
+                unionRegion.Dispose()
 
-                ' Extract the outer boundary (largest closed path)
-                Dim outerBoundary = GetOuterBoundaryOnly(bezierPaths)
-
-                Return outerBoundary
+                MessageBox.Show($"MergePathsPunchOut: Result has {resultPath.Count} commands")
+                Return resultPath
 
             Catch ex As Exception
                 MessageBox.Show($"MergePathsPunchOut Error: {ex.Message}")
-                ' Fallback: return union of all objects
-                Return MergePathsUnion(drawObjects)
+                MessageBox.Show(ex.StackTrace)
+                Return drawObjects(0).PathCommands
             End Try
         End Function
 
@@ -4203,39 +4203,104 @@ Namespace Draw
 
             Try
                 Dim cmds As List(Of PathCommands) = obj.PathCommands
-                If cmds Is Nothing Then Return gp
+                If cmds Is Nothing OrElse cmds.Count = 0 Then Return gp
 
                 Dim startPoint As PointF = PointF.Empty
                 Dim currentPoint As PointF = PointF.Empty
+                Dim figureStarted As Boolean = False
 
                 For Each cmd In cmds
                     Dim commandType As Char = GetCommandChar(cmd)
+
                     Select Case commandType
                         Case "M"c
+                            If figureStarted Then
+                                gp.StartFigure()
+                            End If
                             startPoint = cmd.P
                             currentPoint = cmd.P
+                            figureStarted = True
 
                         Case "L"c
-                            gp.AddLine(currentPoint, cmd.P)
-                            currentPoint = cmd.P
+                            If figureStarted Then
+                                gp.AddLine(currentPoint, cmd.P)
+                                currentPoint = cmd.P
+                            End If
 
                         Case "C"c
-                            ' Bézier curve — ensure control points are not empty
-                            If Not cmd.b1.Equals(PointF.Empty) AndAlso Not cmd.b2.Equals(PointF.Empty) Then
+                            If figureStarted AndAlso Not cmd.b1.IsEmpty AndAlso Not cmd.b2.IsEmpty Then
                                 gp.AddBezier(currentPoint, cmd.b1, cmd.b2, cmd.P)
+                                currentPoint = cmd.P
+                            ElseIf figureStarted Then
+                                gp.AddLine(currentPoint, cmd.P)
                                 currentPoint = cmd.P
                             End If
 
                         Case "Z"c
-                            gp.CloseFigure()
+                            If figureStarted Then
+                                gp.CloseFigure()
+                                figureStarted = False
+                            End If
                     End Select
                 Next
 
             Catch ex As Exception
-                MessageBox.Show("ConvertToGraphicsPath Error: " & ex.Message)
+                MessageBox.Show($"ConvertToGraphicsPath Error: {ex.Message}")
             End Try
 
             Return gp
+        End Function
+
+        Private Function ConvertRegionToPathCommands(region As Region) As List(Of PathCommands)
+            Dim pathCommands As New List(Of PathCommands)()
+
+            Try
+                ' Get the bounds of the region
+                Using boundsPath As New GraphicsPath()
+                    ' Get the region bounds as rectangles
+                    Dim matrix As New Drawing2D.Matrix()
+                    Dim rectangles() As RectangleF = region.GetRegionScans(matrix)
+
+                    If rectangles IsNot Nothing AndAlso rectangles.Length > 0 Then
+                        ' Create a path from the union of all rectangles
+                        For Each rect In rectangles
+                            boundsPath.AddRectangle(rect)
+                        Next
+
+                        ' Convert GraphicsPath to PathCommands
+                        If boundsPath.PointCount > 0 Then
+                            Dim points As PointF() = boundsPath.PathPoints
+                            Dim types As Byte() = boundsPath.PathTypes
+
+                            For i As Integer = 0 To points.Length - 1
+                                If (types(i) And CByte(PathPointType.Start)) <> 0 Then
+                                    ' Start new figure
+                                    pathCommands.Add(New PathCommands(points(i), Nothing, Nothing, "M"c))
+                                ElseIf (types(i) And CByte(PathPointType.Bezier)) <> 0 Then
+                                    ' Bezier curve - get next two control points
+                                    If i + 2 < points.Length Then
+                                        pathCommands.Add(New PathCommands(points(i + 2), points(i), points(i + 1), "C"c))
+                                        i += 2
+                                    End If
+                                Else
+                                    ' Line segment
+                                    pathCommands.Add(New PathCommands(points(i), Nothing, Nothing, "L"c))
+                                End If
+                            Next
+
+                            ' Close the path
+                            If pathCommands.Count > 0 Then
+                                pathCommands.Add(New PathCommands(pathCommands(0).P, Nothing, Nothing, "Z"c))
+                            End If
+                        End If
+                    End If
+                End Using
+
+            Catch ex As Exception
+                MessageBox.Show($"ConvertRegionToPathCommands Error: {ex.Message}")
+            End Try
+
+            Return pathCommands
         End Function
 
 
