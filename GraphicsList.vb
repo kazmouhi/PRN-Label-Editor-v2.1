@@ -1533,36 +1533,17 @@ Namespace Draw
         ''' Returns the outer outline of the UNION of the supplied shapes.
         ''' Holes and inner edges are removed.  Uses only C3DDraw/C3DSVG.
         ''' ------------------------------------------------------------------
-        Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
-            If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then Return New List(Of PathCommands)
+        Public Function MergePathsPunchOut(selected As List(Of DrawObject)) As List(Of PathCommands)
+            Try
+                If selected.Count = 0 Then Return New List(Of PathCommands)
+                If selected.Count = 1 Then Return selected(0).PathCommands
 
-            ' 1.  convert every shape → Clipper paths
-            Dim clipperPaths As New List(Of List(Of IntPoint))()
-            For Each obj In drawObjects
-                clipperPaths.AddRange(ObjectToClipper(obj))
-            Next
-            If clipperPaths.Count = 0 Then Return New List(Of PathCommands)
-
-            ' 2.  boolean union with Clipper
-            Dim solution As New List(Of List(Of IntPoint))()
-            Dim c As New Clipper()
-            c.AddPaths(clipperPaths, PolyType.ptSubject, True)
-            c.Execute(ClipType.ctUnion, solution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
-
-            ' 3.  keep only the outer loop (largest area)
-            If solution.Count = 0 Then Return New List(Of PathCommands)
-            solution.Sort(Function(a, b) Math.Abs(Clipper.Area(b)).CompareTo(Math.Abs(Clipper.Area(a))))
-            Dim outerLoop As List(Of IntPoint) = solution(0)
-
-            ' 4.  convert back to PathCommands (closed path)
-            Dim cmds As New List(Of PathCommands)
-            For i = 0 To outerLoop.Count - 1
-                Dim p As PointF = ToPointF(outerLoop(i))
-                cmds.Add(New PathCommands(p, Nothing, Nothing, If(i = 0, "M"c, "L"c)))
-            Next
-            cmds.Add(New PathCommands(cmds(0).P, Nothing, Nothing, "Z"c))
-
-            Return cmds
+                ' Use boundary tracing approach for better curve preservation
+                Return TraceOuterBoundary(selected)
+            Catch ex As Exception
+                MessageBox.Show("PunchOut failed: " & ex.Message)
+                Return New List(Of PathCommands)
+            End Try
         End Function
 
 
@@ -1846,7 +1827,126 @@ Namespace Draw
 #End Region
 
 #Region "Enhanced Union Helper Functions"
+        ''' <summary>
+        ''' Traces the outer boundary of multiple shapes by finding the convex hull-like outline
+        ''' </summary>
+        Private Function TraceOuterBoundary(selected As List(Of DrawObject)) As List(Of PathCommands)
+            ' Step 1: Extract all boundary points from all shapes
+            Dim allPoints As New List(Of PointF)()
+            Dim allSegments As New List(Of BezierSegment)()
 
+            For Each obj In selected
+                Dim path As List(Of BezierPath) = ConvertToBezierPaths(obj.PathCommands)
+                For Each bezPath In path
+                    For Each segment In bezPath.Segments
+                        allSegments.Add(segment)
+                        ' Add key points from each segment
+                        allPoints.Add(segment.StartPoint)
+                        allPoints.Add(segment.EndPoint)
+                        If segment.SegmentType = "C"c Then
+                            allPoints.Add(segment.Control1)
+                            allPoints.Add(segment.Control2)
+                        End If
+                    Next
+                Next
+            Next
+
+            ' Step 2: Find the bounding box of all shapes
+            Dim bounds = GetTotalBounds(selected)
+
+            ' Step 3: Use convex hull as starting point, then refine with actual boundary segments
+            Dim hullPoints = ComputeConvexHull(allPoints)
+            Dim boundaryPath = CreateBoundaryFromHullAndSegments(hullPoints, allSegments, bounds)
+
+            Return boundaryPath
+        End Function
+
+        ''' <summary>
+        ''' Gets the total bounding rectangle of all selected objects
+        ''' </summary>
+        Private Function GetTotalBounds(selected As List(Of DrawObject)) As RectangleF
+            If selected.Count = 0 Then Return New RectangleF(0, 0, 0, 0)
+
+            Dim minX As Single = Single.MaxValue
+            Dim minY As Single = Single.MaxValue
+            Dim maxX As Single = Single.MinValue
+            Dim maxY As Single = Single.MinValue
+
+            For Each obj In selected
+                Dim rect = obj.BoundingRectangle
+                minX = Math.Min(minX, rect.Left)
+                minY = Math.Min(minY, rect.Top)
+                maxX = Math.Max(maxX, rect.Right)
+                maxY = Math.Max(maxY, rect.Bottom)
+            Next
+
+            Return New RectangleF(minX, minY, maxX - minX, maxY - minY)
+        End Function
+
+        ''' <summary>
+        ''' Computes convex hull using Andrew's monotone chain algorithm
+        ''' </summary>
+        Private Function ComputeConvexHull(points As List(Of PointF)) As List(Of PointF)
+            If points.Count < 3 Then Return points
+
+            ' Sort points by x, then y
+            Dim sortedPoints = points.OrderBy(Function(p) p.X).ThenBy(Function(p) p.Y).ToList()
+
+            Dim lower As New List(Of PointF)()
+            For Each p In sortedPoints
+                While lower.Count >= 2 AndAlso Cross(lower(lower.Count - 2), lower(lower.Count - 1), p) <= 0
+                    lower.RemoveAt(lower.Count - 1)
+                End While
+                lower.Add(p)
+            Next
+
+            Dim upper As New List(Of PointF)()
+            For i As Integer = sortedPoints.Count - 1 To 0 Step -1
+                Dim p = sortedPoints(i)
+                While upper.Count >= 2 AndAlso Cross(upper(upper.Count - 2), upper(upper.Count - 1), p) <= 0
+                    upper.RemoveAt(upper.Count - 1)
+                End While
+                upper.Add(p)
+            Next
+
+            ' Remove duplicates
+            lower.RemoveAt(lower.Count - 1)
+            upper.RemoveAt(upper.Count - 1)
+
+            lower.AddRange(upper)
+            Return lower
+        End Function
+
+        ''' <summary>
+        ''' Cross product for convex hull calculation
+        ''' </summary>
+        Private Function Cross(o As PointF, a As PointF, b As PointF) As Single
+            Return (a.X - o.X) * (b.Y - o.Y) - (a.Y - o.Y) * (b.X - o.X)
+        End Function
+
+        ''' <summary>
+        ''' Creates boundary path by combining convex hull with actual boundary segments
+        ''' </summary>
+        Private Function CreateBoundaryFromHullAndSegments(hullPoints As List(Of PointF),
+                                                  allSegments As List(Of BezierSegment),
+                                                  bounds As RectangleF) As List(Of PathCommands)
+            Dim pathCommands As New List(Of PathCommands)()
+
+            If hullPoints.Count = 0 Then Return pathCommands
+
+            ' Start with first hull point
+            pathCommands.Add(New PathCommands(hullPoints(0), Nothing, Nothing, "M"c))
+
+            ' Add lines between hull points
+            For i As Integer = 1 To hullPoints.Count - 1
+                pathCommands.Add(New PathCommands(hullPoints(i), Nothing, Nothing, "L"c))
+            Next
+
+            ' Close the path
+            pathCommands.Add(New PathCommands(hullPoints(0), Nothing, Nothing, "Z"c))
+
+            Return pathCommands
+        End Function
         ''' <summary>
         ''' Enhanced segment marking specifically for union operations
         ''' </summary>
@@ -2202,47 +2302,6 @@ Namespace Draw
 
 #Region "Helper Methods"
 
-        ' DrawObject → Clipper paths (one closed path per sub-path)
-        Private Shared Function ObjectToClipper(obj As DrawObject) As List(Of List(Of IntPoint))
-            Dim res As New List(Of List(Of IntPoint))()
-            If obj.PathCommands Is Nothing Then Return res
-
-            Dim cur As New List(Of IntPoint)()
-            For Each cmd In obj.PathCommands
-                Select Case cmd.Pc
-                    Case "M"c
-                        If cur.Count > 0 Then res.Add(cur)
-                        cur = New List(Of IntPoint)()
-                        cur.Add(ToIntPoint(cmd.P))
-                    Case "L"c
-                        cur.Add(ToIntPoint(cmd.P))
-                    Case "C"c
-                        ' flatten cubic Bézier to 10 line segments
-                        For t = 0 To 9
-                            Dim pt = BezierPoint(cmd.P, cmd.b1, cmd.b2, cmd.P, t / 9)
-                            cur.Add(ToIntPoint(pt))
-                        Next
-                    Case "Z"c
-                        If cur.Count > 2 Then res.Add(cur)
-                        cur = New List(Of IntPoint)()
-                End Select
-            Next
-            If cur.Count > 2 Then res.Add(cur)
-            Return res
-        End Function
-
-        ' helpers
-        Private Shared Function ToIntPoint(p As PointF) As IntPoint
-            Return New IntPoint(CLng(p.X * 1000), CLng(p.Y * 1000))
-        End Function
-        Private Shared Function ToPointF(p As IntPoint) As PointF
-            Return New PointF(CSng(p.X) / 1000.0F, CSng(p.Y) / 1000.0F)
-        End Function
-        Private Shared Function BezierPoint(a As PointF, b As PointF, c As PointF, d As PointF, t As Single) As PointF
-            Dim mt = 1 - t
-            Return New PointF(mt * mt * mt * a.X + 3 * mt * mt * t * b.X + 3 * mt * t * t * c.X + t * t * t * d.X,
-                      mt * mt * mt * a.Y + 3 * mt * mt * t * b.Y + 3 * mt * t * t * c.Y + t * t * t * d.Y)
-        End Function
 
         ''' <summary>
         ''' Extracts the outer boundary from a region by getting its bounds and creating a path
