@@ -2999,115 +2999,18 @@ Namespace Draw
         ''' Performs a punch out operation (first object minus all others)
         ''' </summary>
         Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
-            If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then
-                Return New List(Of PathCommands)
-            End If
+            If drawObjects.Count = 0 Then Return New List(Of PathCommands)
+            If drawObjects.Count = 1 Then Return drawObjects(0).PathCommands
 
-            ' --- Step 1: compute overall bounds ---
-            Dim allBounds As RectangleF = RectangleF.Empty
-            Dim paths As New List(Of GraphicsPath)
-            For Each obj In drawObjects
-                Dim gp As GraphicsPath = ConvertToGraphicsPath(obj)
-                If gp IsNot Nothing AndAlso Not gp.GetBounds().IsEmpty Then
-                    paths.Add(gp)
-                    If allBounds.IsEmpty Then
-                        allBounds = gp.GetBounds()
-                    Else
-                        allBounds = RectangleF.Union(allBounds, gp.GetBounds())
-                    End If
-                End If
+            ' Start with the first object's path as the base
+            Dim resultPath As List(Of PathCommands) = New List(Of PathCommands)(drawObjects(0).PathCommands)
+
+            ' Subtract each additional path
+            For i As Integer = 1 To drawObjects.Count - 1
+                resultPath = SubtractTwoPaths(resultPath, drawObjects(i).PathCommands)
             Next
 
-            If paths.Count = 0 Then Return New List(Of PathCommands)
-
-            ' --- Step 2: rasterize union into bitmap mask ---
-            Dim scale As Integer = 4 ' controls precision
-            Dim bmpW As Integer = CInt(allBounds.Width * scale) + 4
-            Dim bmpH As Integer = CInt(allBounds.Height * scale) + 4
-            Dim bmp As New Bitmap(bmpW, bmpH, PixelFormat.Format24bppRgb)
-
-            Using g = Graphics.FromImage(bmp)
-                g.Clear(Color.Black)
-                g.SmoothingMode = Drawing2D.SmoothingMode.AntiAlias
-                g.TranslateTransform(-allBounds.Left * scale, -allBounds.Top * scale)
-                g.ScaleTransform(scale, scale)
-                Using fillBrush As New SolidBrush(Color.White)
-                    For Each gp In paths
-                        g.FillPath(fillBrush, gp)
-                    Next
-                End Using
-            End Using
-
-            ' --- Step 3: extract outline pixels (white->black transition) ---
-            Dim outlinePts As New List(Of PointF)
-            Dim visited(bmp.Width - 1, bmp.Height - 1) As Boolean
-
-            ' Helper to check pixel color safely
-            Dim IsWhite As Func(Of Integer, Integer, Boolean) =
-    Function(x As Integer, y As Integer) As Boolean
-        If x < 0 OrElse y < 0 OrElse x >= bmp.Width OrElse y >= bmp.Height Then Return False
-        Return bmp.GetPixel(x, y).R > 128
-    End Function
-
-            ' Find starting point (first white pixel)
-            Dim startX As Integer = -1, startY As Integer = -1
-            For y As Integer = 0 To bmp.Height - 1
-                For x As Integer = 0 To bmp.Width - 1
-                    If IsWhite(x, y) Then
-                        startX = x : startY = y
-                        Exit For
-                    End If
-                Next
-                If startX <> -1 Then Exit For
-            Next
-
-            If startX <> -1 Then
-                Dim dirs As Point() = {
-        New Point(1, 0), New Point(1, 1), New Point(0, 1), New Point(-1, 1),
-        New Point(-1, 0), New Point(-1, -1), New Point(0, -1), New Point(1, -1)
-    }
-
-                Dim px As Integer = startX
-                Dim py As Integer = startY
-                Dim dirIndex As Integer = 0
-                Dim loopSafety As Integer = 0
-
-                Do
-                    outlinePts.Add(New PointF(px / scale + allBounds.Left, py / scale + allBounds.Top))
-                    visited(px, py) = True
-
-                    ' find next neighbor clockwise
-                    Dim foundNext As Boolean = False
-                    For i As Integer = 0 To 7
-                        Dim idx As Integer = (dirIndex + i) Mod 8
-                        Dim nx As Integer = px + dirs(idx).X
-                        Dim ny As Integer = py + dirs(idx).Y
-                        If IsWhite(nx, ny) AndAlso Not visited(nx, ny) Then
-                            px = nx : py = ny
-                            dirIndex = (idx + 6) Mod 8 ' rotate search
-                            foundNext = True
-                            Exit For
-                        End If
-                    Next
-
-                    If Not foundNext Then Exit Do
-
-                    loopSafety += 1
-                    If loopSafety > 10000 Then Exit Do
-                Loop Until (px = startX AndAlso py = startY)
-            End If
-
-            ' --- Step 4: build PathCommands ---
-            Dim result As New List(Of PathCommands)
-            If outlinePts.Count > 0 Then
-                result.Add(New PathCommands(outlinePts(0), Nothing, Nothing, "M"c))
-                For i As Integer = 1 To outlinePts.Count - 1
-                    result.Add(New PathCommands(outlinePts(i), Nothing, Nothing, "L"c))
-                Next
-                result.Add(New PathCommands(outlinePts(0), Nothing, Nothing, "Z"c))
-            End If
-
-            Return result
+            Return resultPath
         End Function
 
         ''' <summary>
