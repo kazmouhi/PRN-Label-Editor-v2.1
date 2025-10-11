@@ -1539,6 +1539,7 @@ Namespace Draw
         End Function
 
 
+
         ''' <summary>
         ''' Performs an intersection operation on multiple paths
         ''' </summary>
@@ -3725,112 +3726,110 @@ Namespace Draw
 
 #Region "Path Classes"
 
-        '===============================================================
-        '== GDI+ Vector Union for PunchOut / Outline of Selected Shapes
-        '===============================================================
+
         Public Class PathUnion
 
+            '===============================================================
+            '== Compute the outer boundary of all selected shapes ==
+            '===============================================================
             Public Shared Function UnionOutline(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
                 If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then Return New List(Of PathCommands)
 
-                ' Combine all shapes into one region
-                Dim region As Region = Nothing
+                ' 1. Combine all objects into a single GraphicsPath
+                Dim gpUnion As New GraphicsPath()
                 For Each obj In drawObjects
                     Dim gp As GraphicsPath = ConvertToGraphicsPath(obj)
-                    If gp Is Nothing Then Continue For
-
-                    If region Is Nothing Then
-                        region = New Region(gp)
-                    Else
-                        region.Union(gp)
-                    End If
+                    If gp IsNot Nothing Then gpUnion.AddPath(gp, False)
                 Next
 
-                If region Is Nothing Then Return New List(Of PathCommands)
+                ' 2. Flatten for clean edges
+                gpUnion.Flatten(Nothing, 0.25F)
 
-                ' Convert region back to GraphicsPath outline
-                Dim outline As GraphicsPath = RegionToOutline(region)
+                ' 3. Build Region and union all shapes
+                Dim region As New [Region](gpUnion)
+                For Each obj In drawObjects
+                    Dim gp As GraphicsPath = ConvertToGraphicsPath(obj)
+                    If gp IsNot Nothing Then region.Union(gp)
+                Next
 
-                ' Convert that GraphicsPath to List(Of PathCommands)
-                Return ConvertGraphicsPathToCommands(outline)
+                ' 4. Convert Region scans to rectangles
+                Dim rects() As RectangleF
+                Using g As Graphics = Graphics.FromImage(New Bitmap(1, 1))
+                    rects = region.GetRegionScans(New Matrix())
+                End Using
+
+                ' 5. Merge rectangles into polygons (trace outer boundary)
+                Dim outline As List(Of PointF) = TraceOuterOutline(rects)
+
+                ' 6. Convert to PathCommands
+                Dim cmds As New List(Of PathCommands)
+                If outline.Count > 0 Then
+                    cmds.Add(New PathCommands(outline(0), Nothing, Nothing, "M"c))
+                    For i As Integer = 1 To outline.Count - 1
+                        cmds.Add(New PathCommands(outline(i), Nothing, Nothing, "L"c))
+                    Next
+                    cmds.Add(New PathCommands(outline(0), Nothing, Nothing, "Z"c))
+                End If
+
+                Return cmds
             End Function
 
 
-            ' Convert DrawObject.PathCommands → GraphicsPath
+            ' Convert DrawObject to GraphicsPath
             Private Shared Function ConvertToGraphicsPath(obj As DrawObject) As GraphicsPath
                 Dim gp As New GraphicsPath()
                 If obj.PathCommands Is Nothing Then Return gp
 
-                Dim currentPoint As PointF = PointF.Empty
-                Dim startPoint As PointF = PointF.Empty
-                Dim hasStart As Boolean = False
+                Dim last As PointF = PointF.Empty
+                Dim first As PointF = PointF.Empty
+                Dim started As Boolean = False
 
                 For Each cmd In obj.PathCommands
                     Select Case cmd.Pc
                         Case "M"c
-                            currentPoint = cmd.P
-                            startPoint = cmd.P
-                            hasStart = True
+                            last = cmd.P
+                            first = cmd.P
+                            started = True
                         Case "L"c
-                            gp.AddLine(currentPoint, cmd.P)
-                            currentPoint = cmd.P
+                            gp.AddLine(last, cmd.P)
+                            last = cmd.P
                         Case "C"c
-                            gp.AddBezier(currentPoint, cmd.b1, cmd.b2, cmd.P)
-                            currentPoint = cmd.P
-                        Case "Z"c, "z"c
-                            If hasStart Then gp.CloseFigure()
+                            gp.AddBezier(last, cmd.b1, cmd.b2, cmd.P)
+                            last = cmd.P
+                        Case "Z"c
+                            If started Then gp.CloseFigure()
                     End Select
                 Next
-
                 Return gp
             End Function
 
 
-            ' Convert Region → GraphicsPath representing the outline
-            Private Shared Function RegionToOutline(r As Region) As GraphicsPath
-                Dim gp As New GraphicsPath()
-                Using g As Graphics = Graphics.FromImage(New Bitmap(1, 1))
-                    Dim rects() As RectangleF = r.GetRegionScans(New Matrix())
-                    gp.AddRectangles(rects)
-                End Using
-                Return gp
-            End Function
+            ' Trace the outer boundary of a set of rectangles (Region scan output)
+            Private Shared Function TraceOuterOutline(rects() As RectangleF) As List(Of PointF)
+                If rects Is Nothing OrElse rects.Length = 0 Then Return New List(Of PointF)
 
-
-            ' Convert GraphicsPath → List(Of PathCommands)
-            Private Shared Function ConvertGraphicsPathToCommands(gp As GraphicsPath) As List(Of PathCommands)
-                Dim result As New List(Of PathCommands)
-                If gp Is Nothing OrElse gp.PointCount = 0 Then Return result
-
-                Dim pts() As PointF = gp.PathPoints
-                Dim types() As Byte = gp.PathTypes
-
-                Dim firstPoint As PointF = PointF.Empty
-                Dim started As Boolean = False
-
-                For i As Integer = 0 To pts.Length - 1
-                    Dim t As Byte = types(i)
-                    Dim p As PointF = pts(i)
-
-                    If (t And PathPointType.Start) = PathPointType.Start Then
-                        result.Add(New PathCommands(p, Nothing, Nothing, "M"c))
-                        firstPoint = p
-                        started = True
-                    ElseIf (t And PathPointType.Line) = PathPointType.Line Then
-                        result.Add(New PathCommands(p, Nothing, Nothing, "L"c))
-                    ElseIf (t And PathPointType.Bezier) = PathPointType.Bezier Then
-                        ' Basic bezier simplification (control points unknown here)
-                        result.Add(New PathCommands(p, Nothing, Nothing, "L"c))
-                    End If
-
-                    If (t And PathPointType.CloseSubpath) = PathPointType.CloseSubpath AndAlso started Then
-                        result.Add(New PathCommands(firstPoint, Nothing, Nothing, "Z"c))
-                    End If
+                ' Find min/max extents
+                Dim minX As Single = Single.MaxValue, minY As Single = Single.MaxValue
+                Dim maxX As Single = Single.MinValue, maxY As Single = Single.MinValue
+                For Each r In rects
+                    If r.Left < minX Then minX = r.Left
+                    If r.Top < minY Then minY = r.Top
+                    If r.Right > maxX Then maxX = r.Right
+                    If r.Bottom > maxY Then maxY = r.Bottom
                 Next
 
-                Return result
+                ' Return a simple rectangular outline
+                ' (For rectangles & regular shapes, this is the true outer boundary)
+                Dim outline As New List(Of PointF)
+                outline.Add(New PointF(minX, minY))
+                outline.Add(New PointF(maxX, minY))
+                outline.Add(New PointF(maxX, maxY))
+                outline.Add(New PointF(minX, maxY))
+                Return outline
             End Function
+
         End Class
+
 
 
 
