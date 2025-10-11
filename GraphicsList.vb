@@ -1527,11 +1527,6 @@ Namespace Draw
 
 
         ''' <summary>
-        ''' Performs a punch out operation - unions all shapes and keeps only the outer boundary
-        ''' This "welds" shapes together and removes internal edges
-        ''' </summary>
-
-        ''' <summary>
         ''' Returns the outline (outer boundary only) of the union of all
         ''' selected shapes.  Holes and inner edges are discarded.
         ''' </summary>
