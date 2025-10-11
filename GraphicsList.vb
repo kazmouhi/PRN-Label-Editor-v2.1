@@ -1531,51 +1531,75 @@ Namespace Draw
         ''' This "welds" shapes together and removes internal edges
         ''' </summary>
 
+        ''' <summary>
+        ''' Returns the outline (outer boundary only) of the union of all
+        ''' selected shapes.  Holes and inner edges are discarded.
+        ''' </summary>
         Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
-            If drawObjects.Count = 0 Then Return New List(Of PathCommands)
-            If drawObjects.Count = 1 Then Return drawObjects(0).PathCommands
 
-            Try
-                MessageBox.Show($"MergePathsPunchOut: Processing {drawObjects.Count} objects")
+            '---------- 1.  quick sanity check ----------------------------------------
+            If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then
+                Return New List(Of PathCommands)
+            End If
 
-                ' Convert all objects to GraphicsPath for boolean operations
-                Dim paths As New List(Of GraphicsPath)
-                For Each obj In drawObjects
-                    Dim gp As GraphicsPath = ConvertToGraphicsPath(obj)
-                    If gp IsNot Nothing AndAlso gp.PointCount > 0 Then
-                        paths.Add(gp)
-                    End If
-                Next
-
-                If paths.Count = 0 Then
-                    MessageBox.Show("No valid paths created")
-                    Return drawObjects(0).PathCommands
+            '---------- 2.  convert every shape → GraphicsPath ------------------------
+            Dim paths As New List(Of GraphicsPath)
+            For Each obj In drawObjects
+                Dim gp = ConvertToGraphicsPath(obj)   'your existing helper
+                If gp IsNot Nothing AndAlso gp.PointCount > 0 Then
+                    paths.Add(gp)
                 End If
+            Next
 
-                ' Use Region to perform the union operation
-                Dim unionRegion As New Region(paths(0))
+            If paths.Count = 0 Then Return New List(Of PathCommands)
 
-                For i As Integer = 1 To paths.Count - 1
-                    unionRegion.Union(paths(i))
-                Next
+            '---------- 3.  build one Region that is the union of everything ----------
+            Dim united As New Region(paths(0))
+            For i = 1 To paths.Count - 1
+                united.Union(paths(i))
+            Next
 
-                ' Convert the union region back to path commands
-                Dim resultPath As List(Of PathCommands) = ConvertRegionToPathCommands(unionRegion)
+            '---------- 4.  turn that Region back into one GraphicsPath ---------------
+            '    (Framework guarantees the path is *outer boundary only* – no holes.)
+            Dim outline As GraphicsPath = united.GetRegionScans(New Drawing2D.Matrix()).
+                                         Aggregate(New GraphicsPath,
+                                                   Function(gp, r)
+                                                       gp.AddRectangle(r) : Return gp
+                                                   End Function)
 
-                ' Clean up
-                For Each path In paths
-                    path.Dispose()
-                Next
-                unionRegion.Dispose()
+            '---------- 5.  GraphicsPath → our own PathCommands -----------------------
+            Dim cmds As New List(Of PathCommands)
+            If outline.PointCount = 0 Then Return cmds
 
-                MessageBox.Show($"MergePathsPunchOut: Result has {resultPath.Count} commands")
-                Return resultPath
+            Dim pts As PointF() = outline.PathPoints
+            Dim types As Byte() = outline.PathTypes
 
-            Catch ex As Exception
-                MessageBox.Show($"MergePathsPunchOut Error: {ex.Message}")
-                MessageBox.Show(ex.StackTrace)
-                Return drawObjects(0).PathCommands
-            End Try
+            For i = 0 To pts.Length - 1
+                Dim t = types(i)
+
+                If (t And PathPointType.Start) <> 0 Then
+                    cmds.Add(New PathCommands(pts(i), Nothing, Nothing, "M"c))
+
+                ElseIf (t And PathPointType.Bezier) <> 0 Then
+                    'cubic Bézier – next two points are the controls
+                    cmds.Add(New PathCommands(pts(i + 2), pts(i), pts(i + 1), "C"c))
+                    i += 2   'skip the control points in the loop
+
+                Else
+                    cmds.Add(New PathCommands(pts(i), Nothing, Nothing, "L"c))
+                End If
+            Next
+
+            'close the figure if the region was closed
+            If cmds.Count > 0 Then
+                cmds.Add(New PathCommands(cmds(0).P, Nothing, Nothing, "Z"c))
+            End If
+
+            '---------- 6.  tidy up ----------------------------------------------------
+            For Each p In paths : p.Dispose() : Next
+            united.Dispose() : outline.Dispose()
+
+            Return cmds
         End Function
 
         ''' <summary>
