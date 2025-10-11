@@ -2995,22 +2995,25 @@ Namespace Draw
             Return resultPath
         End Function
 
+
         ''' <summary>
-        ''' Performs a punch out operation (first object minus all others)
+        ''' Performs a punch out operation - unions all shapes and keeps only the outer boundary
+        ''' This "welds" shapes together and removes internal edges
         ''' </summary>
         Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
             If drawObjects.Count = 0 Then Return New List(Of PathCommands)
             If drawObjects.Count = 1 Then Return drawObjects(0).PathCommands
 
-            ' Start with the first object's path as the base
-            Dim resultPath As List(Of PathCommands) = New List(Of PathCommands)(drawObjects(0).PathCommands)
+            ' First, union all shapes together (weld them)
+            Dim unionResult = MergePathsUnion(drawObjects)
 
-            ' Subtract each additional path
-            For i As Integer = 1 To drawObjects.Count - 1
-                resultPath = SubtractTwoPaths(resultPath, drawObjects(i).PathCommands)
-            Next
+            ' Convert to BezierPath
+            Dim bezierPaths = ConvertToBezierPaths(unionResult)
 
-            Return resultPath
+            ' Extract only the outermost boundary (largest path by area)
+            Dim outerBoundary = GetOuterBoundaryOnly(bezierPaths)
+
+            Return outerBoundary
         End Function
 
         ''' <summary>
@@ -3082,67 +3085,137 @@ Namespace Draw
         End Function
 
         ''' <summary>
-        ''' Punch-out: 1st path minus 2nd path (hole where 2nd sits)
+        ''' Extracts only the outer boundary from a set of paths (removes holes)
         ''' </summary>
-        ''' <summary>
-        ''' Punch-out: 1st path minus 2nd path (hole where 2nd sits)
-        ''' </summary>
-        Private Function SubtractTwoPaths(path1 As List(Of PathCommands),
-                                        path2 As List(Of PathCommands)) As List(Of PathCommands)
-            Dim aBez = ConvertToBezierPaths(path1)
-            Dim bBez = ConvertToBezierPaths(path2)
+        Private Function GetOuterBoundaryOnly(paths As List(Of BezierPath)) As List(Of PathCommands)
+            If paths.Count = 0 Then Return New List(Of PathCommands)
 
-            ' Check for no overlap first
-            If Not PathsOverlap(aBez, bBez) Then
-                Return path1 ' No overlap, return first path unchanged
+            ' Find the path with the largest area (this is the outer boundary)
+            Dim outerPath As BezierPath = Nothing
+            Dim maxArea As Double = 0
+
+            For Each path In paths
+                If Not path.IsClosed Then Continue For
+
+                Dim area = CalculatePathArea(path)
+
+                ' The outer boundary has the largest positive area
+                ' (counter-clockwise winding)
+                If Math.Abs(area) > maxArea Then
+                    maxArea = Math.Abs(area)
+                    outerPath = path
+                End If
+            Next
+
+            If outerPath Is Nothing Then
+                ' If no closed path found, return all paths
+                Return ConvertToPathCommandsImproved(paths)
             End If
 
-            Dim intersections = FindAllPathIntersections(aBez, bBez)
-            intersections = CleanupIntersections(intersections)
+            ' Return only the outer boundary
+            Dim result As New List(Of BezierPath)
+            result.Add(outerPath)
 
-            ' Handle case where path2 completely contains path1
+            Return ConvertToPathCommandsImproved(result)
+        End Function
+
+        ''' <summary>
+        ''' Calculates the signed area of a closed path using the shoelace formula
+        ''' Positive area = counter-clockwise, Negative area = clockwise
+        ''' </summary>
+        Private Function CalculatePathArea(path As BezierPath) As Double
+            If Not path.IsClosed OrElse path.Segments.Count < 3 Then
+                Return 0
+            End If
+
+            Dim area As Double = 0
+
+            For Each segment In path.Segments
+                ' For accurate area calculation of curves, we need to sample points
+                Dim steps As Integer = If(segment.SegmentType = "C"c, 10, 1)
+
+                For i As Integer = 0 To steps - 1
+                    Dim t1 As Double = i / steps
+                    Dim t2 As Double = (i + 1) / steps
+
+                    Dim p1 = segment.PointAt(t1)
+                    Dim p2 = segment.PointAt(t2)
+
+                    ' Shoelace formula: area += (x1 * y2 - x2 * y1)
+                    area += (p1.X * p2.Y - p2.X * p1.Y)
+                Next
+            Next
+
+            Return area / 2.0
+        End Function
+
+        ''' <summary>
+        ''' Subtracts the second path from the first while preserving Bézier curves - IMPROVED VERSION
+        ''' </summary>
+        Private Function SubtractTwoPaths(path1 As List(Of PathCommands), path2 As List(Of PathCommands)) As List(Of PathCommands)
+            ' Convert to BezierPath for processing
+            Dim bezierPath1 As List(Of BezierPath) = ConvertToBezierPaths(path1)
+            Dim bezierPath2 As List(Of BezierPath) = ConvertToBezierPaths(path2)
+
+            ' Check if paths don't overlap at all
+            If Not PathsOverlap(bezierPath1, bezierPath2) Then
+                ' No overlap - just return the first path unchanged
+                Return path1
+            End If
+
+            ' Find all intersections between the paths
+            Dim intersections As List(Of PathIntersection) = FindAllPathIntersections(bezierPath1, bezierPath2)
+
+            ' If no intersections but bounding boxes overlap, check containment
             If intersections.Count = 0 Then
-                If CompletelyContains(bBez, aBez) Then
-                    Return New List(Of PathCommands)() ' Path1 is completely inside path2, result is empty
-                ElseIf CompletelyContains(aBez, bBez) Then
-                    ' Path1 contains path2 - need to create a hole
-                    ' Combine both paths with proper orientation
-                    Dim result As New List(Of PathCommands)(path1)
+                ' Check if second path completely contains the first
+                If CompletelyContains(bezierPath2, bezierPath1) Then
+                    ' Path2 contains path1 completely, so result is empty
+                    Return New List(Of PathCommands)()
+                End If
 
+                ' Path1 contains path2 - need to create a hole
+                If CompletelyContains(bezierPath1, bezierPath2) Then
+                    ' Combine both paths with proper orientation for hole
+                    Dim result As New List(Of PathCommands)(path1)
                     ' Add the hole (path2 reversed for proper winding)
                     Dim reversedPath2 = ReversePath(path2)
                     result.AddRange(reversedPath2)
                     Return result
-                Else
-                    Return path1 ' No intersection, return first path
                 End If
+
+                ' No intersection, first path unchanged
+                Return path1
             End If
 
+            ' Clean up duplicate or very close intersections
+            intersections = CleanupIntersections(intersections)
+
             ' Split both paths at intersection points
-            Dim aSplit = SplitPathAtIntersections(aBez, intersections, True)
-            Dim bSplit = SplitPathAtIntersections(bBez, intersections, False)
+            Dim splitPath1 As List(Of BezierPath) = SplitPathAtIntersections(bezierPath1, intersections, True)
+            Dim splitPath2 As List(Of BezierPath) = SplitPathAtIntersections(bezierPath2, intersections, False)
 
             ' Mark segments: keep path1 outside path2
-            MarkPathSegmentsImproved(aSplit, bBez, False)  ' path1 outside path2
+            MarkPathSegmentsImproved(splitPath1, bezierPath2, False)  ' path1 outside path2
 
-            ' For path2, we need segments that are inside path1 (these will become holes)
-            MarkPathSegmentsImproved(bSplit, aBez, True)   ' path2 inside path1
+            ' For path2, mark segments inside path1 (these will become holes)
+            MarkPathSegmentsImproved(splitPath2, bezierPath1, True)   ' path2 inside path1
 
             ' Collect segments with proper orientation
             Dim outerSegments As New List(Of BezierSegment)
             Dim holeSegments As New List(Of BezierSegment)
 
             ' Add path1 segments that are outside path2 (outer boundary)
-            For Each p In aSplit
+            For Each p In splitPath1
                 For Each s In p.Segments
-                    If s.Keep Then outerSegments.Add(s)
+                    If s.Keep Then outerSegments.Add(s.Clone())
                 Next
             Next
 
             ' Add path2 segments that are inside path1 (holes - need to be reversed)
-            For Each p In bSplit
+            For Each p In splitPath2
                 For Each s In p.Segments
-                    If s.Keep Then holeSegments.Add(s)
+                    If s.Keep Then holeSegments.Add(s.Clone())
                 Next
             Next
 
