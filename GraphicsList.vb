@@ -1359,7 +1359,7 @@ Namespace Draw
 
             Catch ex As Exception
                 ' Log the exception for debugging purposes
-                Debug.WriteLine($"Error in ShapeCopier: {ex.ToString()}")
+                MessageBox.Show($"Error in ShapeCopier: {ex.ToString()}")
 
                 ' Optionally, inform the user that something went wrong
                 MessageBox.Show("An unexpected error occurred while copying the shape.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
@@ -2547,10 +2547,8 @@ Namespace Draw
             End Function
 
 #End Region
-
-
             ''' <summary>
-            ''' Converts PathCommands list to BezierPath for processing
+            ''' Converts PathCommands list to BezierPath for processing - COMPLETE VERSION
             ''' </summary>
             Private Function ConvertToBezierPaths(pathCommands As List(Of PathCommands)) As List(Of BezierPath)
                 Dim result As New List(Of BezierPath)()
@@ -2569,17 +2567,50 @@ Namespace Draw
                         Case "M"c ' MoveTo - Start a new subpath
                             If currentPath.Segments.Count > 0 Then
                                 ' Add the current path to the result if it has segments
+                                currentPath.PathIndex = pathIndex
                                 result.Add(currentPath)
                                 currentPath = New BezierPath()
                                 pathIndex += 1
-                                currentPoint = Nothing
-                                startPoint = Nothing
+                            End If
+
+                            startPoint = cmd.P
+                            currentPoint = cmd.P
+
+                        Case "L"c ' LineTo
+                            If currentPoint <> Nothing Then
+                                Dim segment As New BezierSegment(currentPoint, cmd.P, Nothing, Nothing, "L"c)
+                                segment.PathIndex = pathIndex
+                                segment.SegmentIndex = currentPath.Segments.Count
+                                currentPath.Segments.Add(segment)
+                                currentPoint = cmd.P
+                            End If
+
+                        Case "C"c ' Cubic Bezier
+                            If currentPoint <> Nothing Then
+                                Dim segment As New BezierSegment(currentPoint, cmd.P, cmd.b1, cmd.b2, "C"c)
+                                segment.PathIndex = pathIndex
+                                segment.SegmentIndex = currentPath.Segments.Count
+                                currentPath.Segments.Add(segment)
+                                currentPoint = cmd.P
+                            End If
+
+                        Case "Z"c ' ClosePath
+                            If currentPath.Segments.Count > 0 Then
+                                currentPath.IsClosed = True
+                                ' Add line back to start if needed
+                                If PointDistance(currentPoint, startPoint) > 0.001 Then
+                                    Dim segment As New BezierSegment(currentPoint, startPoint, Nothing, Nothing, "L"c)
+                                    segment.PathIndex = pathIndex
+                                    segment.SegmentIndex = currentPath.Segments.Count
+                                    currentPath.Segments.Add(segment)
+                                End If
                             End If
                     End Select
                 Next
 
                 ' Add the last path if it has segments
                 If currentPath.Segments.Count > 0 Then
+                    currentPath.PathIndex = pathIndex
                     result.Add(currentPath)
                 End If
 
@@ -3000,20 +3031,48 @@ Namespace Draw
         ''' Performs a punch out operation - unions all shapes and keeps only the outer boundary
         ''' This "welds" shapes together and removes internal edges
         ''' </summary>
+        ''' <summary>
+        ''' Performs a punch out operation - unions all shapes and keeps only the outer boundary
+        ''' This "welds" shapes together and removes internal edges
+        ''' </summary>
         Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
             If drawObjects.Count = 0 Then Return New List(Of PathCommands)
             If drawObjects.Count = 1 Then Return drawObjects(0).PathCommands
 
-            ' First, union all shapes together (weld them)
-            Dim unionResult = MergePathsUnion(drawObjects)
+            Try
+                ' First, union all shapes together (weld them)
+                MessageBox.Show($"MergePathsPunchOut: Starting union of {drawObjects.Count} objects")
+                Dim unionResult = MergePathsUnion(drawObjects)
 
-            ' Convert to BezierPath
-            Dim bezierPaths = ConvertToBezierPaths(unionResult)
+                MessageBox.Show($"MergePathsPunchOut: Union result has {unionResult.Count} commands")
 
-            ' Extract only the outermost boundary (largest path by area)
-            Dim outerBoundary = GetOuterBoundaryOnly(bezierPaths)
+                If unionResult Is Nothing OrElse unionResult.Count = 0 Then
+                    MessageBox.Show("MergePathsPunchOut: Union returned empty result!")
+                    ' Fallback: just return the first path
+                    Return drawObjects(0).PathCommands
+                End If
 
-            Return outerBoundary
+                ' Convert to BezierPath
+                Dim bezierPaths = ConvertToBezierPaths(unionResult)
+                MessageBox.Show($"MergePathsPunchOut: Converted to {bezierPaths.Count} Bezier paths")
+
+                If bezierPaths.Count = 0 Then
+                    MessageBox.Show("MergePathsPunchOut: No bezier paths created!")
+                    Return unionResult ' Return union result as-is
+                End If
+
+                ' Extract only the outermost boundary (largest path by area)
+                Dim outerBoundary = GetOuterBoundaryOnly(bezierPaths)
+                MessageBox.Show($"MergePathsPunchOut: Outer boundary has {outerBoundary.Count} commands")
+
+                Return outerBoundary
+
+            Catch ex As Exception
+                MessageBox.Show($"MergePathsPunchOut Error: {ex.Message}")
+                MessageBox.Show(ex.StackTrace)
+                ' Fallback: return first object
+                Return drawObjects(0).PathCommands
+            End Try
         End Function
 
         ''' <summary>
@@ -4104,7 +4163,7 @@ Namespace Draw
                 Next
 
             Catch ex As Exception
-                Debug.WriteLine("ConvertToGraphicsPath Error: " & ex.Message)
+                MessageBox.Show("ConvertToGraphicsPath Error: " & ex.Message)
             End Try
 
             Return gp
