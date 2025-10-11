@@ -1523,68 +1523,64 @@ Namespace Draw
         End Function
 
         ''' <summary>
-        ''' Optimized PunchOut for rectangular shapes - creates the outer boundary
+        ''' Performs a Punch-Out (subtract all subsequent shapes from the first).
+        ''' Works with any path type and preserves "around" edge traversal.
         ''' </summary>
         Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
             If drawObjects.Count = 0 Then Return New List(Of PathCommands)
-            If drawObjects.Count = 1 Then Return drawObjects(0).PathCommands   ' nothing to punch
+            If drawObjects.Count = 1 Then Return drawObjects(0).PathCommands
 
-            '--- 1.  convert every shape to BezierPaths -----------------------------
+            '--- 1. Convert all shapes to Bezier paths
             Dim allBeziers As New List(Of List(Of BezierPath))
             For Each o In drawObjects
                 allBeziers.Add(ConvertToBezierPaths(o.PathCommands))
             Next
 
-            '--- 2.  quick bbox test – if the first shape is completely inside
-            '        another one we can return an empty path early -------------------
-            Dim baseBounds As RectangleF = allBeziers(0)(0).GetBoundingBox()
-            For i = 1 To allBeziers.Count - 1
-                For Each bp In allBeziers(i)
-                    If CompletelyContains(New List(Of BezierPath) From {bp},
-                                  New List(Of BezierPath) From {allBeziers(0)(0)}) Then
-                        Return New List(Of PathCommands)()          ' hole swallowed whole
-                    End If
-                Next
-            Next
-
-            '--- 3.  split **base** (index 0) at every intersection with **others** --
             Dim basePaths As List(Of BezierPath) = allBeziers(0)
-            Dim intersections As New List(Of PathIntersection)()
 
+            '--- 2. Collect all intersections between base and each puncher
+            Dim intersections As New List(Of PathIntersection)
             For i = 1 To allBeziers.Count - 1
                 intersections.AddRange(FindAllPathIntersections(basePaths, allBeziers(i)))
             Next
             intersections = CleanupIntersections(intersections)
 
-            Dim splitBase As List(Of BezierPath) =
-        SplitPathAtIntersections(basePaths, intersections, True)
+            '--- 3. Split base path at intersections
+            Dim splitBase As List(Of BezierPath) = SplitPathAtIntersections(basePaths, intersections, True)
 
-            '--- 4.  mark segments that are **inside** any puncher -------------------
+            '--- 4. Flag which segments are inside a puncher (to remove)
             For Each seg In splitBase.SelectMany(Function(p) p.Segments)
-                seg.Keep = True                                     ' default
-                seg.IsInside = False
                 Dim mid As PointF = seg.PointAt(0.5)
-
+                Dim inside As Boolean = False
                 For i = 1 To allBeziers.Count - 1
                     For Each puncher In allBeziers(i)
                         If puncher.IsClosed AndAlso ContainsPoint(puncher, mid) Then
-                            seg.IsInside = True
+                            inside = True
                             Exit For
                         End If
                     Next
+                    If inside Then Exit For
                 Next
-                seg.Keep = Not seg.IsInside                         ' keep only OUTSIDE parts
+                seg.Keep = Not inside
             Next
 
-            '--- 5.  walk the remaining outer boundary ------------------------------
+            '--- 5. Walk remaining boundary
             Dim keptSegs As List(Of BezierSegment) =
         splitBase.SelectMany(Function(p) p.Segments).Where(Function(s) s.Keep).ToList()
-
             Dim walked As List(Of BezierPath) = WalkOuterBoundary(keptSegs)
 
-            '--- 6.  convert back to PathCommands -----------------------------------
+            '--- 6. Ensure correct winding: outer CCW, holes CW
+            For Each path In walked
+                Dim area = CalculatePathArea(path)
+                If area < 0 Then
+                    path.Segments.Reverse()
+                End If
+            Next
+
+            '--- 7. Convert back to PathCommands
             Return ConvertToPathCommandsImproved(walked)
         End Function
+
 
         ''' <summary>
         ''' Performs an intersection operation on multiple paths
