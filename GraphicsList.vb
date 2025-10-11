@@ -1525,13 +1525,9 @@ Namespace Draw
         End Function
 
 
-        ''' <summary>
-        ''' Returns the outline (outer boundary only) of the union of all
-        ''' selected shapes.  Holes and inner edges are discarded.
-        ''' </summary>
         ''' ------------------------------------------------------------------
         ''' Returns the outer outline of the UNION of the supplied shapes.
-        ''' Holes and inner edges are removed.
+        ''' Holes and inner edges are removed.  Works in 32- or 64-bit.
         ''' ------------------------------------------------------------------
         Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
 
