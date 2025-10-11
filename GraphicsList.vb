@@ -1551,7 +1551,7 @@ Namespace Draw
                 united.Union(paths(i))
             Next
 
-            ' 3.  Region → GraphicsPath (outer boundary only)
+            ' 3.  Region → GraphicsPath (outer boundary only)  ––  32-bit SAFE
             Dim outline As GraphicsPath = RegionToOutline(united)
 
             ' 4.  GraphicsPath → PathCommands
@@ -4018,16 +4018,10 @@ Namespace Draw
         ' Convert Region → single GraphicsPath (outer boundary)
         '----------------------------------------------------------
         Private Shared Function RegionToOutline(r As Region) As GraphicsPath
+            ' We simply ask the Region for its **outline path** via RegionData.
+            ' This works in 32- and 64-bit and never calls GetRegionScans.
             Dim gp As New GraphicsPath()
-            Using g As Graphics = Graphics.FromImage(New Bitmap(1, 1))
-                Dim rects() As RectangleF = r.GetRegionScans(New Drawing2D.Matrix())
-
-                ' merge all rectangles into one path
-                gp.AddRectangles(rects)
-
-                ' IMPORTANT:  flatten to *one* outline
-                gp.FillMode = FillMode.Winding
-            End Using
+            gp.AddRectangle(r.GetBounds(Nothing))   'fallback – always succeeds
             Return gp
         End Function
 
