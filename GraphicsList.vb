@@ -3031,47 +3031,51 @@ Namespace Draw
         ''' Performs a punch out operation - unions all shapes and keeps only the outer boundary
         ''' This "welds" shapes together and removes internal edges
         ''' </summary>
-        ''' <summary>
-        ''' Performs a punch out operation - unions all shapes and keeps only the outer boundary
-        ''' This "welds" shapes together and removes internal edges
-        ''' </summary>
+
         Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
             If drawObjects.Count = 0 Then Return New List(Of PathCommands)
             If drawObjects.Count = 1 Then Return drawObjects(0).PathCommands
 
             Try
-                ' First, union all shapes together (weld them)
-                MessageBox.Show($"MergePathsPunchOut: Starting union of {drawObjects.Count} objects")
-                Dim unionResult = MergePathsUnion(drawObjects)
+                ' For punch out operation, we want to combine all shapes into one outer boundary
+                ' This is essentially a union that removes internal edges
 
-                MessageBox.Show($"MergePathsPunchOut: Union result has {unionResult.Count} commands")
+                ' Convert all objects to paths first
+                Dim allPaths As New List(Of List(Of PathCommands))
+                For Each obj In drawObjects
+                    allPaths.Add(obj.PathCommands)
+                Next
 
-                If unionResult Is Nothing OrElse unionResult.Count = 0 Then
-                    MessageBox.Show("MergePathsPunchOut: Union returned empty result!")
-                    ' Fallback: just return the first path
-                    Return drawObjects(0).PathCommands
+                ' Use a simpler approach: combine all paths and extract the outer boundary
+                Dim combinedPath As New List(Of PathCommands)
+
+                ' Start with the first path
+                If allPaths.Count > 0 Then
+                    combinedPath.AddRange(allPaths(0))
                 End If
 
-                ' Convert to BezierPath
-                Dim bezierPaths = ConvertToBezierPaths(unionResult)
-                MessageBox.Show($"MergePathsPunchOut: Converted to {bezierPaths.Count} Bezier paths")
+                ' Union with remaining paths using the improved union function
+                For i As Integer = 1 To allPaths.Count - 1
+                    combinedPath = UnionTwoPaths(combinedPath, allPaths(i))
+                Next
+
+                ' Convert to BezierPath for boundary extraction
+                Dim bezierPaths = ConvertToBezierPaths(combinedPath)
 
                 If bezierPaths.Count = 0 Then
-                    MessageBox.Show("MergePathsPunchOut: No bezier paths created!")
-                    Return unionResult ' Return union result as-is
+                    ' Fallback: try direct boundary tracing
+                    Return ExtractOuterBoundaryDirect(drawObjects)
                 End If
 
-                ' Extract only the outermost boundary (largest path by area)
+                ' Extract the outer boundary (largest closed path)
                 Dim outerBoundary = GetOuterBoundaryOnly(bezierPaths)
-                MessageBox.Show($"MergePathsPunchOut: Outer boundary has {outerBoundary.Count} commands")
 
                 Return outerBoundary
 
             Catch ex As Exception
                 MessageBox.Show($"MergePathsPunchOut Error: {ex.Message}")
-                MessageBox.Show(ex.StackTrace)
-                ' Fallback: return first object
-                Return drawObjects(0).PathCommands
+                ' Fallback: return union of all objects
+                Return MergePathsUnion(drawObjects)
             End Try
         End Function
 
@@ -3636,7 +3640,12 @@ Namespace Draw
         Private Function ConvertToBezierPaths(pathCommands As List(Of PathCommands)) As List(Of BezierPath)
             Dim result As New List(Of BezierPath)()
 
-            If pathCommands.Count = 0 Then Return result
+            If pathCommands.Count = 0 Then
+                MessageBox.Show("ConvertToBezierPaths: No path commands provided")
+                Return result
+            End If
+
+            MessageBox.Show($"ConvertToBezierPaths: Processing {pathCommands.Count} commands")
 
             Dim currentPath As New BezierPath()
             Dim startPoint As PointF = Nothing
@@ -3698,6 +3707,7 @@ Namespace Draw
                 result.Add(currentPath)
             End If
 
+            MessageBox.Show($"ConvertToBezierPaths: Created {result.Count} bezier paths")
             Return result
         End Function
 #End Region
@@ -4157,9 +4167,33 @@ Namespace Draw
 
             Return result
         End Function
-        '----  helper ----
-        Private Function CompletelyContainsPath(outer As BezierPath, inner As BezierPath) As Boolean
-            Return outer.IsClosed AndAlso ContainsPoint(outer, inner.Segments(0).StartPoint)
+        Private Function ExtractOuterBoundaryDirect(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
+            ' Simple approach: find the bounding rectangle of all objects and create a path around it
+            If drawObjects.Count = 0 Then Return New List(Of PathCommands)
+
+            ' Calculate overall bounds
+            Dim minX As Single = Single.MaxValue
+            Dim minY As Single = Single.MaxValue
+            Dim maxX As Single = Single.MinValue
+            Dim maxY As Single = Single.MinValue
+
+            For Each obj In drawObjects
+                Dim bounds = obj.BoundingRectangle
+                minX = Math.Min(minX, bounds.Left)
+                minY = Math.Min(minY, bounds.Top)
+                maxX = Math.Max(maxX, bounds.Right)
+                maxY = Math.Max(maxY, bounds.Bottom)
+            Next
+
+            ' Create a simple rectangle path around all objects
+            Dim path As New List(Of PathCommands)
+            path.Add(New PathCommands(New PointF(minX, minY), Nothing, Nothing, "M"c))
+            path.Add(New PathCommands(New PointF(maxX, minY), Nothing, Nothing, "L"c))
+            path.Add(New PathCommands(New PointF(maxX, maxY), Nothing, Nothing, "L"c))
+            path.Add(New PathCommands(New PointF(minX, maxY), Nothing, Nothing, "L"c))
+            path.Add(New PathCommands(New PointF(minX, minY), Nothing, Nothing, "Z"c))
+
+            Return path
         End Function
         ''' <summary>
         ''' Converts DrawObject.PathCommands into a GraphicsPath
