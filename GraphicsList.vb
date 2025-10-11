@@ -3629,8 +3629,9 @@ Namespace Draw
 #End Region
 
 #Region "Path Conversion"
+
         ''' <summary>
-        ''' Converts PathCommands list to BezierPath for processing
+        ''' Converts PathCommands list to BezierPath for processing - COMPLETE VERSION
         ''' </summary>
         Private Function ConvertToBezierPaths(pathCommands As List(Of PathCommands)) As List(Of BezierPath)
             Dim result As New List(Of BezierPath)()
@@ -3644,22 +3645,56 @@ Namespace Draw
 
             For i As Integer = 0 To pathCommands.Count - 1
                 Dim cmd As PathCommands = pathCommands(i)
+                Dim cmdType As Char = GetCommandChar(cmd) ' Use the existing helper function
 
-                Select Case cmd.Pc
+                Select Case cmdType
                     Case "M"c ' MoveTo - Start a new subpath
                         If currentPath.Segments.Count > 0 Then
                             ' Add the current path to the result if it has segments
+                            currentPath.PathIndex = pathIndex
                             result.Add(currentPath)
                             currentPath = New BezierPath()
                             pathIndex += 1
-                            currentPoint = Nothing
-                            startPoint = Nothing
+                        End If
+
+                        startPoint = cmd.P
+                        currentPoint = cmd.P
+
+                    Case "L"c ' LineTo
+                        If currentPoint <> Nothing Then
+                            Dim segment As New BezierSegment(currentPoint, cmd.P, Nothing, Nothing, "L"c)
+                            segment.PathIndex = pathIndex
+                            segment.SegmentIndex = currentPath.Segments.Count
+                            currentPath.Segments.Add(segment)
+                            currentPoint = cmd.P
+                        End If
+
+                    Case "C"c ' Cubic Bezier
+                        If currentPoint <> Nothing Then
+                            Dim segment As New BezierSegment(currentPoint, cmd.P, cmd.b1, cmd.b2, "C"c)
+                            segment.PathIndex = pathIndex
+                            segment.SegmentIndex = currentPath.Segments.Count
+                            currentPath.Segments.Add(segment)
+                            currentPoint = cmd.P
+                        End If
+
+                    Case "Z"c ' ClosePath
+                        If currentPath.Segments.Count > 0 Then
+                            currentPath.IsClosed = True
+                            ' Add line back to start if needed
+                            If PointDistance(currentPoint, startPoint) > 0.001 Then
+                                Dim segment As New BezierSegment(currentPoint, startPoint, Nothing, Nothing, "L"c)
+                                segment.PathIndex = pathIndex
+                                segment.SegmentIndex = currentPath.Segments.Count
+                                currentPath.Segments.Add(segment)
+                            End If
                         End If
                 End Select
             Next
 
             ' Add the last path if it has segments
             If currentPath.Segments.Count > 0 Then
+                currentPath.PathIndex = pathIndex
                 result.Add(currentPath)
             End If
 
