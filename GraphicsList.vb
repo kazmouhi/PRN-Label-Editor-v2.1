@@ -1531,70 +1531,49 @@ Namespace Draw
         ''' selected shapes.  Holes and inner edges are discarded.
         ''' </summary>
         Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
+            If drawObjects.Count = 0 Then Return New List(Of PathCommands)
+            If drawObjects.Count = 1 Then Return drawObjects(0).PathCommands
 
-            '---------- 1.  quick sanity check ----------------------------------------
-            If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then
-                Return New List(Of PathCommands)
-            End If
+            Try
+                ' Convert all objects to GraphicsPath for boolean operations
+                Dim paths As New List(Of GraphicsPath)
+                For Each obj In drawObjects
+                    Dim gp As GraphicsPath = ConvertToGraphicsPath(obj)
+                    If gp IsNot Nothing AndAlso gp.PointCount > 0 Then
+                        paths.Add(gp)
+                    End If
+                Next
 
-            '---------- 2.  convert every shape → GraphicsPath ------------------------
-            Dim paths As New List(Of GraphicsPath)
-            For Each obj In drawObjects
-                Dim gp = ConvertToGraphicsPath(obj)   'your existing helper
-                If gp IsNot Nothing AndAlso gp.PointCount > 0 Then
-                    paths.Add(gp)
+                If paths.Count = 0 Then
+                    Return drawObjects(0).PathCommands
                 End If
-            Next
 
-            If paths.Count = 0 Then Return New List(Of PathCommands)
+                ' Use Region to perform the union operation
+                Dim unionRegion As New Region(paths(0))
 
-            '---------- 3.  build one Region that is the union of everything ----------
-            Dim united As New Region(paths(0))
-            For i = 1 To paths.Count - 1
-                united.Union(paths(i))
-            Next
+                For i As Integer = 1 To paths.Count - 1
+                    unionRegion.Union(paths(i))
+                Next
 
-            '---------- 4.  turn that Region back into one GraphicsPath ---------------
-            '    (Framework guarantees the path is *outer boundary only* – no holes.)
-            Dim outline As GraphicsPath = united.GetRegionScans(New Drawing2D.Matrix()).
-                                         Aggregate(New GraphicsPath,
-                                                   Function(gp, r)
-                                                       gp.AddRectangle(r) : Return gp
-                                                   End Function)
+                ' Get the boundary of the union region
+                Dim boundaryPath As GraphicsPath = GetRegionBoundary(unionRegion)
 
-            '---------- 5.  GraphicsPath → our own PathCommands -----------------------
-            Dim cmds As New List(Of PathCommands)
-            If outline.PointCount = 0 Then Return cmds
+                ' Convert the boundary path to PathCommands
+                Dim resultPath As List(Of PathCommands) = ConvertGraphicsPathToPathCommands(boundaryPath)
 
-            Dim pts As PointF() = outline.PathPoints
-            Dim types As Byte() = outline.PathTypes
+                ' Clean up
+                For Each path In paths
+                    path.Dispose()
+                Next
+                boundaryPath.Dispose()
+                unionRegion.Dispose()
 
-            For i = 0 To pts.Length - 1
-                Dim t = types(i)
+                Return resultPath
 
-                If (t And PathPointType.Start) <> 0 Then
-                    cmds.Add(New PathCommands(pts(i), Nothing, Nothing, "M"c))
-
-                ElseIf (t And PathPointType.Bezier) <> 0 Then
-                    'cubic Bézier – next two points are the controls
-                    cmds.Add(New PathCommands(pts(i + 2), pts(i), pts(i + 1), "C"c))
-                    i += 2   'skip the control points in the loop
-
-                Else
-                    cmds.Add(New PathCommands(pts(i), Nothing, Nothing, "L"c))
-                End If
-            Next
-
-            'close the figure if the region was closed
-            If cmds.Count > 0 Then
-                cmds.Add(New PathCommands(cmds(0).P, Nothing, Nothing, "Z"c))
-            End If
-
-            '---------- 6.  tidy up ----------------------------------------------------
-            For Each p In paths : p.Dispose() : Next
-            united.Dispose() : outline.Dispose()
-
-            Return cmds
+            Catch ex As Exception
+                MessageBox.Show($"MergePathsPunchOut Error: {ex.Message}")
+                Return drawObjects(0).PathCommands
+            End Try
         End Function
 
         ''' <summary>
@@ -2232,6 +2211,99 @@ Namespace Draw
 
 #Region "Helper Methods"
 
+
+        ''' <summary>
+        ''' Extracts the outer boundary from a region by getting its bounds and creating a path
+        ''' </summary>
+        Private Function GetRegionBoundary(region As Region) As GraphicsPath
+            Dim boundaryPath As New GraphicsPath()
+
+            ' Get the bounding rectangle of the entire region
+            Dim bounds As RectangleF = region.GetBounds(Graphics.FromHwnd(IntPtr.Zero))
+
+            ' Create a path that represents the bounding rectangle
+            ' This gives us the outer boundary
+            boundaryPath.AddRectangle(bounds)
+
+            Return boundaryPath
+        End Function
+
+        ''' <summary>
+        ''' Alternative method that tries to extract the actual boundary path from the region
+        ''' </summary>
+        Private Function GetRegionExactBoundary(region As Region) As GraphicsPath
+            Dim boundaryPath As New GraphicsPath()
+
+            Try
+                ' This method tries to get the actual boundary by using the region's data
+                Using matrix As New Drawing2D.Matrix()
+                    ' Get all the rectangles that make up the region
+                    Dim rectangles() As RectangleF = region.GetRegionScans(matrix)
+
+                    If rectangles IsNot Nothing AndAlso rectangles.Length > 0 Then
+                        ' Find the overall bounding rectangle
+                        Dim minX As Single = Single.MaxValue
+                        Dim minY As Single = Single.MaxValue
+                        Dim maxX As Single = Single.MinValue
+                        Dim maxY As Single = Single.MinValue
+
+                        For Each rect In rectangles
+                            minX = Math.Min(minX, rect.Left)
+                            minY = Math.Min(minY, rect.Top)
+                            maxX = Math.Max(maxX, rect.Right)
+                            maxY = Math.Max(maxY, rect.Bottom)
+                        Next
+
+                        ' Create a path around the entire boundary
+                        boundaryPath.AddRectangle(New RectangleF(minX, minY, maxX - minX, maxY - minY))
+                    End If
+                End Using
+            Catch ex As Exception
+                ' Fallback: use simple bounds
+                Dim bounds As RectangleF = region.GetBounds(Graphics.FromHwnd(IntPtr.Zero))
+                boundaryPath.AddRectangle(bounds)
+            End Try
+
+            Return boundaryPath
+        End Function
+
+        ''' <summary>
+        ''' Converts GraphicsPath back to PathCommands
+        ''' </summary>
+        Private Function ConvertGraphicsPathToPathCommands(gp As GraphicsPath) As List(Of PathCommands)
+            Dim pathCommands As New List(Of PathCommands)()
+
+            If gp Is Nothing OrElse gp.PointCount = 0 Then Return pathCommands
+
+            Dim points As PointF() = gp.PathPoints
+            Dim types As Byte() = gp.PathTypes
+
+            For i As Integer = 0 To points.Length - 1
+                Dim pointType As PathPointType = CType(types(i) And &H7, PathPointType)
+                Dim isStartFigure As Boolean = (types(i) And CByte(PathPointType.Start)) <> 0
+                Dim isBezier As Boolean = (types(i) And CByte(PathPointType.Bezier)) <> 0
+                Dim isCloseSubpath As Boolean = (types(i) And CByte(PathPointType.CloseSubpath)) <> 0
+
+                If isStartFigure Then
+                    ' Move to start point
+                    pathCommands.Add(New PathCommands(points(i), Nothing, Nothing, "M"c))
+                ElseIf isBezier Then
+                    ' Cubic Bezier curve - current point and next two points are control points
+                    If i + 2 < points.Length Then
+                        pathCommands.Add(New PathCommands(points(i + 2), points(i), points(i + 1), "C"c))
+                        i += 2 ' Skip the next two points as they're part of this Bezier
+                    End If
+                ElseIf isCloseSubpath Then
+                    ' Close the path
+                    pathCommands.Add(New PathCommands(points(i), Nothing, Nothing, "Z"c))
+                Else
+                    ' Line segment
+                    pathCommands.Add(New PathCommands(points(i), Nothing, Nothing, "L"c))
+                End If
+            Next
+
+            Return pathCommands
+        End Function
         ''' <summary>
         ''' Gets the bounding box for a segment
         ''' </summary>
