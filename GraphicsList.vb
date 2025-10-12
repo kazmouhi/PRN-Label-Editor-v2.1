@@ -25,7 +25,7 @@ Namespace Draw
 
         Public ReadOnly _graphicsList As ArrayList
         Public ReadOnly _inMemoryList As ArrayList
-        'Private ReadOnly _undoRedo As Command.UndoRedo
+        Private ReadOnly _undoRedo As Command.UndoRedo
 
         Private _isCut As Boolean
 
@@ -3312,3 +3312,4 @@ Namespace Draw
     End Class
 
 End Namespace
+
