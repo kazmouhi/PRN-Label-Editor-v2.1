@@ -2917,130 +2917,95 @@ Namespace Draw
             Add(newObject)
         End Sub
 
-'UNION -------------------------------------------------
+        'UNION -------------------------------------------------
+        ' one welded outline that keeps **everything**:
+        ' outside + inside islands are all preserved
+        'UNION -------------------------------------------------
         ' one welded outline that keeps **everything**:
         ' outside + inside islands are all preserved
         Public Function MergePathsUnion(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
-    Dim result As New List(Of PathCommands)
-    If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then Return result
-    If drawObjects.Count = 1 Then Return drawObjects(0).PathCommands
+            If drawObjects.Count = 0 Then Return New List(Of PathCommands)
+            If drawObjects.Count = 1 Then Return GetRotatedPathCommands(drawObjects(0))
 
-    Dim scale As Double = 10.0
-    Dim maxRange As Double = 9.0E+18 / scale
+            ' Apply rotation transformations to all objects first
+            Dim transformedObjects As New List(Of List(Of PathCommands))()
+            For Each obj In drawObjects
+                transformedObjects.Add(GetRotatedPathCommands(obj))
+            Next
 
-    Dim clipper As New Clipper()
+            Dim res As List(Of PathCommands) = transformedObjects(0)
+            For i As Integer = 1 To transformedObjects.Count - 1
+                res = UnionKeepAllSimple(res, transformedObjects(i))
+            Next
+            Return res
+        End Function
 
-    For Each obj In drawObjects
-        Dim gp As New GraphicsPath()
-        Dim prevPoint As PointF = Nothing
-        Dim started As Boolean = False
+        'Simple union that concatenates paths (used after rotation is applied)
+        Private Function UnionKeepAllSimple(a As List(Of PathCommands), b As List(Of PathCommands)) As List(Of PathCommands)
+            Dim joined As New List(Of PathCommands)(a)
+            joined.AddRange(b)
+            Return joined
+        End Function
 
-        ' Apply rotation transformation - THIS WAS MISSING IN UNION
-        Dim rotationMatrix As New Matrix()
-        If obj.CurrentAngle <> 0 Then
-            rotationMatrix.RotateAt(obj.CurrentAngle, obj.origin)
-        End If
+        'Union that keeps **all** sub-paths with proper rotation handling
+        Private Function UnionKeepAll(a As List(Of PathCommands), b As List(Of PathCommands)) As List(Of PathCommands)
+            ' Apply rotation transformations before union
+            Dim transformedA As List(Of PathCommands) = ApplyRotationToPathCommands(a)
+            Dim transformedB As List(Of PathCommands) = ApplyRotationToPathCommands(b)
 
-        For Each cmd As PathCommands In obj.PathCommands
-            ' Transform the point using rotation - SAME LOGIC AS IN PUNCHOUT
-            Dim transformedPoint As PointF = cmd.P
-            Dim transformedB1 As PointF = If(cmd.b1 <> Nothing, cmd.b1, Nothing)
-            Dim transformedB2 As PointF = If(cmd.b2 <> Nothing, cmd.b2, Nothing)
+            ' Simply concatenate disjoint paths; if they overlap we still keep both
+            Dim joined As New List(Of PathCommands)(transformedA)
+            joined.AddRange(transformedB)
+            Return joined
+        End Function
 
-            If obj.CurrentAngle <> 0 Then
-                Dim pointArray() As PointF = {transformedPoint}
-                rotationMatrix.TransformPoints(pointArray)
-                transformedPoint = pointArray(0)
+        ''' <summary>
+        ''' Applies rotation transformation to path commands
+        ''' </summary>
+        Private Function ApplyRotationToPathCommands(pathCommands As List(Of PathCommands)) As List(Of PathCommands)
+            If pathCommands.Count = 0 Then Return pathCommands
 
-                If transformedB1 <> Nothing Then
-                    Dim b1Array() As PointF = {transformedB1}
-                    rotationMatrix.TransformPoints(b1Array)
-                    transformedB1 = b1Array(0)
-                End If
+            ' Create a temporary DrawPath to handle rotation
+            Dim tempPath As New DrawPath(pathCommands)
 
-                If transformedB2 <> Nothing Then
-                    Dim b2Array() As PointF = {transformedB2}
-                    rotationMatrix.TransformPoints(b2Array)
-                    transformedB2 = b2Array(0)
-                End If
-            End If
+            ' Apply the rotation transformation
+            Dim rotatedCommands As List(Of PathCommands) = GetRotatedPathCommands(tempPath)
 
-            Select Case cmd.Pc
-                Case "M"c
-                    gp.StartFigure()
-                    prevPoint = transformedPoint
-                    started = True
-                Case "L"c
-                    If started Then gp.AddLine(prevPoint, transformedPoint)
-                    prevPoint = transformedPoint
-                Case "C"c
-                    If started Then gp.AddBezier(prevPoint, transformedB1, transformedB2, transformedPoint)
-                    prevPoint = transformedPoint
-                Case "Z"c
-                    gp.CloseFigure()
-                    started = False
-            End Select
-        Next
+            Return rotatedCommands
+        End Function
 
-        gp.Flatten()
+        ''' <summary>
+        ''' Gets the path commands after applying rotation transformation
+        ''' </summary>
+        Private Function GetRotatedPathCommands(drawObj As DrawObject) As List(Of PathCommands)
+            If drawObj.CurrentAngle = 0 Then Return drawObj.PathCommands
 
-        Dim pathPoints() As PointF = gp.PathPoints
-        Dim types() As Byte = gp.PathTypes
-        Dim subPath As New List(Of IntPoint)()
+            ' Create a rotation matrix
+            Dim rotationMatrix As New Matrix()
+            rotationMatrix.RotateAt(drawObj.CurrentAngle, drawObj.origin)
 
-        For i As Integer = 0 To pathPoints.Length - 1
-            Dim x As Double = pathPoints(i).X * scale
-            Dim y As Double = pathPoints(i).Y * scale
+            ' Transform all points in the path commands
+            Dim rotatedCommands As New List(Of PathCommands)()
 
-            If Double.IsNaN(x) OrElse Double.IsNaN(y) OrElse
-               Double.IsInfinity(x) OrElse Double.IsInfinity(y) OrElse
-               Math.Abs(x) > maxRange OrElse Math.Abs(y) > maxRange Then
-                Continue For
-            End If
+            For Each cmd As PathCommands In drawObj.PathCommands
+                Dim rotatedPoint As PointF = TransformPoint(cmd.P, rotationMatrix)
+                Dim rotatedB1 As PointF = If(cmd.b1 <> Nothing, TransformPoint(cmd.b1, rotationMatrix), Nothing)
+                Dim rotatedB2 As PointF = If(cmd.b2 <> Nothing, TransformPoint(cmd.b2, rotationMatrix), Nothing)
 
-            subPath.Add(New IntPoint(CLng(x), CLng(y)))
+                rotatedCommands.Add(New PathCommands(rotatedPoint, rotatedB1, rotatedB2, cmd.Pc))
+            Next
 
-            If (types(i) And &H80) <> 0 Then
-                If subPath.Count > 2 Then
-                    Try
-                        clipper.AddPath(subPath, PolyType.ptSubject, True)
-                    Catch ex As Exception
-                    End Try
-                End If
-                subPath = New List(Of IntPoint)()
-            End If
-        Next
+            Return rotatedCommands
+        End Function
 
-        If subPath.Count > 2 Then
-            Try
-                clipper.AddPath(subPath, PolyType.ptSubject, True)
-            Catch ex As Exception
-            End Try
-        End If
-    Next
-
-    ' Union finale
-    Dim solution As New List(Of List(Of IntPoint))()
-    clipper.Execute(ClipType.ctUnion, solution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
-
-    ' Conversion vers PathCommands
-    For Each poly In solution
-        If poly.Count = 0 Then Continue For
-
-        Dim first As New PointF(CSng(poly(0).X / scale), CSng(poly(0).Y / scale))
-        result.Add(New PathCommands(first, Nothing, Nothing, "M"c))
-
-        For i As Integer = 1 To poly.Count - 1
-            Dim pt As New PointF(CSng(poly(i).X / scale), CSng(poly(i).Y / scale))
-            result.Add(New PathCommands(pt, Nothing, Nothing, "L"c))
-        Next
-
-        result.Add(New PathCommands(first, Nothing, Nothing, "Z"c))
-    Next
-
-    Return result
-End Function
-
+        ''' <summary>
+        ''' Transforms a point using a matrix
+        ''' </summary>
+        Private Function TransformPoint(point As PointF, matrix As Matrix) As PointF
+            Dim points() As PointF = {point}
+            matrix.TransformPoints(points)
+            Return points(0)
+        End Function
 
         Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
             Dim result As New List(Of PathCommands)
@@ -3715,14 +3680,14 @@ End Function
 #Region "Helper Methods"
 
 
-        'Union that keeps **all** sub-paths (no filtering)
-        Private Function UnionKeepAll(a As List(Of PathCommands),
-                              b As List(Of PathCommands)) As List(Of PathCommands)
-            'simply concatenate disjoint paths; if they overlap we still keep both
-            Dim joined As New List(Of PathCommands)(a)
-            joined.AddRange(b)
-            Return joined
-        End Function
+        ''Union that keeps **all** sub-paths (no filtering)
+        'Private Function UnionKeepAll(a As List(Of PathCommands),
+        '                      b As List(Of PathCommands)) As List(Of PathCommands)
+        '    'simply concatenate disjoint paths; if they overlap we still keep both
+        '    Dim joined As New List(Of PathCommands)(a)
+        '    joined.AddRange(b)
+        '    Return joined
+        'End Function
 
         '----------------------------------------------------------
         ' keep every OUTER loop of a previously-united path
@@ -4889,6 +4854,3 @@ End Function
 
     End Class
 End Namespace
-
-
-
