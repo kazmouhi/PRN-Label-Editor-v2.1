@@ -2,38 +2,21 @@
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.0//EN" "http://www.w3.org/TR/2001/REC-SVG-20010904/DTD/svg10.dtd">
 <svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="600" height="600">
 <desc>New project</desc>
-
-<path d="M116,79
-C116,59.67003 146.6685,44 184.5,44
-C210,44 235,55 245,73
-C262,73 277,88 277,107.5
-C277,126.55383 250.5848,142 218,142
-C203,142 190,138 180,131
-C171,138 158,141 143,141
-C110.4152,141 84,126.44925 84,108.5
-C84,93 96,83 116,79 Z"
-style="fill:none;stroke:black;stroke-width:1"/>
-
-
-      
-  <path d="M331,71 L359,71 L359,42 L423,42 L423,51 L481,51 L481,105 L439,105 L439,128 L331,128 Z" 
-        style="fill:none; stroke:Black; stroke-width:1" />
-<rect ShapeName="Shape12" style="fill:none; stroke:Black; stroke-width:1" x="369" y="184" width="64" height="41" rx="0" ry="0" transform="rotate(0,0,0)" />
-<rect ShapeName="Shape13" style="fill:none; stroke:Black; stroke-width:1" x="398" y="193" width="93" height="54" rx="0" ry="0" transform="rotate(0,0,0)" />
-<rect ShapeName="Shape14" style="fill:none; stroke:Black; stroke-width:1" x="341" y="213" width="108" height="57" rx="0" ry="0" transform="rotate(0,0,0)" />
-<rect ShapeName="Shape12" style="fill:none; stroke:Black; stroke-width:1" x="366" y="347" width="64" height="41" rx="0" ry="0" transform="rotate(0,0,0)" />
-<rect ShapeName="Shape13" style="fill:none; stroke:Black; stroke-width:1" x="395" y="356" width="93" height="54" rx="0" ry="0" transform="rotate(0,0,0)" />
-<rect ShapeName="Shape14" style="fill:none; stroke:Black; stroke-width:1" x="338" y="376" width="108" height="57" rx="0" ry="0" transform="rotate(0,0,0)" />
-<rect ShapeName="Shape12" style="fill:none; stroke:Black; stroke-width:1" x="375" y="480" width="64" height="41" rx="0" ry="0" transform="rotate(0,0,0)" />
-<rect ShapeName="Shape13" style="fill:none; stroke:Black; stroke-width:1" x="404" y="489" width="93" height="54" rx="0" ry="0" transform="rotate(0,0,0)" />
-<rect ShapeName="Shape14" style="fill:none; stroke:Black; stroke-width:1" x="347" y="509" width="108" height="57" rx="0" ry="0" transform="rotate(0,0,0)" />
-<path ShapeName="Shape6" style="fill:none; stroke:Black; stroke-width:1" d="M245 206C245 186.67 214.3315 171 176.5 171C138.6685 171 108 186.67 108 206C108 225.33 138.6685 241 176.5 241C214.3315 241 245 225.33 245 206 Z " transform="rotate(0,0,0)" />
-<path ShapeName="Shape8" style="fill:none; stroke:Black; stroke-width:1" d="M269 234.5C269 215.4462 242.5848 200 210 200C177.4152 200 151 215.4462 151 234.5C151 253.5538 177.4152 269 210 269C242.5848 269 269 253.5538 269 234.5 Z " transform="rotate(0,0,0)" />
-<path ShapeName="Shape10" style="fill:none; stroke:Black; stroke-width:1" d="M194 235.5C194 217.5508 167.5848 203 135 203C102.4152 203 76 217.5508 76 235.5C76 253.4492 102.4152 268 135 268C167.5848 268 194 253.4492 194 235.5 Z " transform="rotate(0,0,0)" />
+<path ShapeName="Shape6" style="fill:none; stroke:Black; stroke-width:1" d="M253 79C253 59.67003 222.3315 44 184.5 44C146.6685 44 116 59.67003 116 79C116 98.32997 146.6685 114 184.5 114C222.3315 114 253 98.32997 253 79 Z " transform="rotate(0,0,0)" />
+<path ShapeName="Shape8" style="fill:none; stroke:Black; stroke-width:1" d="M277 107.5C277 88.44617 250.5848 73 218 73C185.4152 73 159 88.44617 159 107.5C159 126.5538 185.4152 142 218 142C250.5848 142 277 126.5538 277 107.5 Z " transform="rotate(0,0,0)" />
+<path ShapeName="Shape10" style="fill:none; stroke:Black; stroke-width:1" d="M202 108.5C202 90.55075 175.5848 76 143 76C110.4152 76 84 90.55075 84 108.5C84 126.4492 110.4152 141 143 141C175.5848 141 202 126.4492 202 108.5 Z " transform="rotate(0,0,0)" />
+<path ShapeName="Shape12" style="fill:none; stroke:Black; stroke-width:1" d="M366 347L430 347 430 388 366 388 366 347 Z " transform="rotate(0,0,0)" />
+<path ShapeName="Shape13" style="fill:none; stroke:Black; stroke-width:1" d="M395 356L488 356 488 410 395 410 395 356 Z " transform="rotate(0,0,0)" />
+<path ShapeName="Shape14" style="fill:none; stroke:Black; stroke-width:1" d="M338 376L446 376 446 433 338 433 338 376 Z " transform="rotate(0,0,0)" />
+<path ShapeName="Shape12" style="fill:none; stroke:Black; stroke-width:1" d="M375 480L439 480 439 521 375 521 375 480 Z " transform="rotate(0,0,0)" />
+<path ShapeName="Shape13" style="fill:none; stroke:Black; stroke-width:1" d="M404 489L497 489 497 543 404 543 404 489 Z " transform="rotate(0,0,0)" />
+<path ShapeName="Shape14" style="fill:none; stroke:Black; stroke-width:1" d="M347 509L455 509 455 566 347 566 347 509 Z " transform="rotate(0,0,0)" />
 <path ShapeName="Shape6" style="fill:none; stroke:Black; stroke-width:1" d="M237 355C237 335.67 206.3315 320 168.5 320C130.6685 320 100 335.67 100 355C100 374.33 130.6685 390 168.5 390C206.3315 390 237 374.33 237 355 Z " transform="rotate(0,0,0)" />
 <path ShapeName="Shape8" style="fill:none; stroke:Black; stroke-width:1" d="M261 383.5C261 364.4462 234.5848 349 202 349C169.4152 349 143 364.4462 143 383.5C143 402.5538 169.4152 418 202 418C234.5848 418 261 402.5538 261 383.5 Z " transform="rotate(0,0,0)" />
 <path ShapeName="Shape10" style="fill:none; stroke:Black; stroke-width:1" d="M186 384.5C186 366.5508 159.5848 352 127 352C94.41519 352 68 366.5508 68 384.5C68 402.4492 94.41519 417 127 417C159.5848 417 186 402.4492 186 384.5 Z " transform="rotate(0,0,0)" />
 <path ShapeName="Shape6" style="fill:none; stroke:Black; stroke-width:1" d="M229 515C229 495.67 198.3315 480 160.5 480C122.6685 480 92 495.67 92 515C92 534.33 122.6685 550 160.5 550C198.3315 550 229 534.33 229 515 Z " transform="rotate(0,0,0)" />
 <path ShapeName="Shape8" style="fill:none; stroke:Black; stroke-width:1" d="M253 543.5C253 524.4462 226.5848 509 194 509C161.4152 509 135 524.4462 135 543.5C135 562.5538 161.4152 578 194 578C226.5848 578 253 562.5538 253 543.5 Z " transform="rotate(0,0,0)" />
 <path ShapeName="Shape10" style="fill:none; stroke:Black; stroke-width:1" d="M178 544.5C178 526.5508 151.5848 512 119 512C86.41519 512 60 526.5508 60 544.5C60 562.4492 86.41519 577 119 577C151.5848 577 178 562.4492 178 544.5 Z " transform="rotate(0,0,0)" />
+<path ShapeName="Shape36" style="fill:none; stroke:Black; stroke-width:1" d="M172.6 210.4L176.8 212.5 180.6 214.8 183.9 217.3 186.9 220 189.4 222.9 191.4 225.8 192.8 228.9 193.7 232.2 194 235.5 193.7 238.8 193.4 239.8 190.3 240.3 176.5 241 162.7 240.3 151.4 238.4 151.3 238 151 234.5 151.3 231 152.2 227.6 153.6 224.2 155.6 221.1 158.1 218.1 161.1 215.2 164.5 212.6 168.3 210.1 169.8 209.3 Z " transform="rotate(0,0,0)" />
+<path ShapeName="Shape39" style="fill:none; stroke:Black; stroke-width:1" d="M423 51L481 51 481 105 439 105 439 128 331 128 331 71 359 71 359 42 423 42 Z " transform="rotate(0,0,0)" />
 </svg>
