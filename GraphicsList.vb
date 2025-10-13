@@ -4275,6 +4275,93 @@ Namespace Draw
         Private Function Midpoint(p1 As PointF, p2 As PointF) As PointF
             Return New PointF((p1.X + p2.X) / 2, (p1.Y + p2.Y) / 2)
         End Function
+        ''' <summary>
+        ''' Applies a DrawObject's rotation (and optional translation) to all PathCommands.
+        ''' Returns a new list with transformed coordinates in world space.
+        ''' </summary>
+        Private Function ApplyObjectTransformToPathCommands(pc As List(Of PathCommands), obj As DrawObject) As List(Of PathCommands)
+            If pc Is Nothing Then Return New List(Of PathCommands)
+            Dim result As New List(Of PathCommands)
+
+            Dim angle As Double = obj.CurrentAngle
+            Dim hasRotation As Boolean = Math.Abs(angle) > 0.0001
+            Dim rotateCenter As PointF = obj.RotateStartPoint
+            Dim rad As Double = angle * Math.PI / 180.0
+
+            For Each cmd In pc
+                Dim p As PointF = cmd.P
+                Dim b1 As Nullable(Of PointF) = Nothing
+                Dim b2 As Nullable(Of PointF) = Nothing
+
+                ' Copy control points if present
+                If Not cmd.b1.Equals(PointF.Empty) Then b1 = cmd.b1
+                If Not cmd.b2.Equals(PointF.Empty) Then b2 = cmd.b2
+
+                ' Apply rotation
+                If hasRotation Then
+                    p = RotatePoint(p, rotateCenter, rad)
+                    If b1.HasValue Then b1 = RotatePoint(b1.Value, rotateCenter, rad)
+                    If b2.HasValue Then b2 = RotatePoint(b2.Value, rotateCenter, rad)
+                End If
+
+                ' Build the new command, preserving control points if any
+                Dim newCmd As PathCommands
+                If b1.HasValue AndAlso b2.HasValue Then
+                    newCmd = New PathCommands(p, b1.Value, b2.Value, cmd.Pc)
+                ElseIf b1.HasValue Then
+                    newCmd = New PathCommands(p, b1.Value, Nothing, cmd.Pc)
+                Else
+                    newCmd = New PathCommands(p, Nothing, Nothing, cmd.Pc)
+                End If
+
+                result.Add(newCmd)
+            Next
+
+            Return result
+        End Function
+
+        Private Function RotatePoint(pt As PointF, center As PointF, rad As Double) As PointF
+            Dim dx As Double = pt.X - center.X
+            Dim dy As Double = pt.Y - center.Y
+            Dim cosA As Double = Math.Cos(rad)
+            Dim sinA As Double = Math.Sin(rad)
+            Return New PointF(
+        CSng(center.X + dx * cosA - dy * sinA),
+        CSng(center.Y + dx * sinA + dy * cosA)
+    )
+        End Function
+
+
+        ''' <summary>
+        ''' Split cubic Bezier (p0,p1,p2,p3) at t into (p0,a1,a2,mid) and (mid,b2,b1,p3)
+        ''' </summary>
+        Private Sub SplitCubicBezier(p0 As PointF, c1 As PointF, c2 As PointF, p3 As PointF, t As Double,
+                             ByRef left0 As PointF, ByRef left1 As PointF, ByRef left2 As PointF, ByRef left3 As PointF,
+                             ByRef right0 As PointF, ByRef right1 As PointF, ByRef right2 As PointF, ByRef right3 As PointF)
+            ' De Casteljau
+            Dim p01 As PointF = Lerp(p0, c1, t)
+            Dim p12 As PointF = Lerp(c1, c2, t)
+            Dim p23 As PointF = Lerp(c2, p3, t)
+
+            Dim p012 As PointF = Lerp(p01, p12, t)
+            Dim p123 As PointF = Lerp(p12, p23, t)
+
+            Dim p0123 As PointF = Lerp(p012, p123, t) ' mid point
+
+            left0 = p0
+            left1 = p01
+            left2 = p012
+            left3 = p0123
+
+            right0 = p0123
+            right1 = p123
+            right2 = p23
+            right3 = p3
+        End Sub
+
+        Private Function Lerp(a As PointF, b As PointF, t As Double) As PointF
+            Return New PointF(CSng(a.X + (b.X - a.X) * t), CSng(a.Y + (b.Y - a.Y) * t))
+        End Function
 
 #End Region
 
@@ -4755,4 +4842,3 @@ Namespace Draw
 
     End Class
 End Namespace
-
