@@ -2887,7 +2887,7 @@ Namespace Draw
             ' Collect all selected objects
             For Each o As DrawObject In _graphicsList
                 If o.Selected Then
-                    ObjList.Add(o)
+                    ObjList.Add(o.Clone)
                 End If
             Next
 
@@ -2923,101 +2923,139 @@ Namespace Draw
         ' outside + inside islands are all preserved
         Public Function MergePathsUnion(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
             If drawObjects.Count = 0 Then Return New List(Of PathCommands)
-            If drawObjects.Count = 1 Then
-                Return ApplyObjectTransformToPathCommands(drawObjects(0).PathCommands, drawObjects(0))
-            End If
+            If drawObjects.Count = 1 Then Return drawObjects(0).PathCommands
 
-            Dim result As New List(Of PathCommands)
-            Dim scale As Double = 1000.0 ' Reasonable scale factor
-            Dim clipper As New Clipper()
-            Dim hasValidPaths As Boolean = False
-
+            Dim res As List(Of PathCommands) = drawObjects(0).PathCommands
             For Each obj In drawObjects
-                ' Apply transformation and convert to Clipper polygons
-                Dim transformedCommands As List(Of PathCommands) = ApplyObjectTransformToPathCommands(obj.PathCommands, obj)
-                Dim paths As List(Of List(Of IntPoint)) = ConvertCurvesToClipperPaths(transformedCommands, scale)
-
-                ' Only add valid paths
-                If paths IsNot Nothing AndAlso paths.Count > 0 Then
-                    Try
-                        clipper.AddPaths(paths, PolyType.ptSubject, True)
-                        hasValidPaths = True
-                    Catch ex As Exception
-                        ' Log or handle the error, but continue with other paths
-                        Debug.WriteLine($"Failed to add paths: {ex.Message}")
-                    End Try
+                ' Apply rotation transformation
+                Dim rotationMatrix As New Matrix()
+                If obj.CurrentAngle <> 0 Then
+                    rotationMatrix.RotateAt(obj.CurrentAngle, obj.origin)
                 End If
+
+                res = UnionKeepAll(res, obj.PathCommands)
             Next
-
-            ' Perform union only if we have valid paths
-            Dim solution As New List(Of List(Of IntPoint))()
-            Try
-                If hasValidPaths Then
-                    clipper.Execute(ClipType.ctUnion, solution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
-                Else
-                    Return New List(Of PathCommands)() ' Return empty if no valid paths
-                End If
-            Catch ex As Exception
-                Debug.WriteLine($"Clipper union failed: {ex.Message}")
-                Return New List(Of PathCommands)()
-            End Try
-
-            ' Convert back to PathCommands
-            result = ReconstructCurvesFromPolygons(solution, scale)
-            Return result
+            Return res
         End Function
 
+
         Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
-            If drawObjects.Count = 0 Then Return New List(Of PathCommands)
-            If drawObjects.Count = 1 Then
-                Return ApplyObjectTransformToPathCommands(drawObjects(0).PathCommands, drawObjects(0))
-            End If
-
             Dim result As New List(Of PathCommands)
-            Dim scale As Double = 1000.0
+            If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then Return result
+
+            Dim scale As Double = 10.0
+            Dim maxRange As Double = 9.0E+18 / scale
+
             Dim clipper As New Clipper()
-            Dim hasValidPaths As Boolean = False
 
-            ' First object is the base (what we keep)
-            Dim baseCommands As List(Of PathCommands) = ApplyObjectTransformToPathCommands(drawObjects(0).PathCommands, drawObjects(0))
-            Dim basePaths As List(Of List(Of IntPoint)) = ConvertCurvesToClipperPaths(baseCommands, scale)
-            If basePaths IsNot Nothing AndAlso basePaths.Count > 0 Then
-                Try
-                    clipper.AddPaths(basePaths, PolyType.ptSubject, True)
-                    hasValidPaths = True
-                Catch ex As Exception
-                    Debug.WriteLine($"Failed to add base paths: {ex.Message}")
-                End Try
-            End If
+            For Each obj In drawObjects
+                Dim gp As New GraphicsPath()
+                Dim prevPoint As PointF = Nothing
+                Dim started As Boolean = False
 
-            ' Subsequent objects are holes (what we remove)
-            For i As Integer = 1 To drawObjects.Count - 1
-                Dim holeCommands As List(Of PathCommands) = ApplyObjectTransformToPathCommands(drawObjects(i).PathCommands, drawObjects(i))
-                Dim holePaths As List(Of List(Of IntPoint)) = ConvertCurvesToClipperPaths(holeCommands, scale)
-                If holePaths IsNot Nothing AndAlso holePaths.Count > 0 Then
+                ' Apply rotation transformation
+                Dim rotationMatrix As New Matrix()
+                If obj.CurrentAngle <> 0 Then
+                    rotationMatrix.RotateAt(obj.CurrentAngle, obj.origin)
+                End If
+
+                For Each cmd As PathCommands In obj.PathCommands
+                    ' Transform the point using rotation
+                    Dim transformedPoint As PointF = cmd.P
+                    Dim transformedB1 As PointF = If(cmd.b1 <> Nothing, cmd.b1, Nothing)
+                    Dim transformedB2 As PointF = If(cmd.b2 <> Nothing, cmd.b2, Nothing)
+
+                    If obj.CurrentAngle <> 0 Then
+                        Dim pointArray() As PointF = {transformedPoint}
+                        rotationMatrix.TransformPoints(pointArray)
+                        transformedPoint = pointArray(0)
+
+                        If transformedB1 <> Nothing Then
+                            Dim b1Array() As PointF = {transformedB1}
+                            rotationMatrix.TransformPoints(b1Array)
+                            transformedB1 = b1Array(0)
+                        End If
+
+                        If transformedB2 <> Nothing Then
+                            Dim b2Array() As PointF = {transformedB2}
+                            rotationMatrix.TransformPoints(b2Array)
+                            transformedB2 = b2Array(0)
+                        End If
+                    End If
+
+                    Select Case cmd.Pc
+                        Case "M"c
+                            gp.StartFigure()
+                            prevPoint = transformedPoint
+                            started = True
+                        Case "L"c
+                            If started Then gp.AddLine(prevPoint, transformedPoint)
+                            prevPoint = transformedPoint
+                        Case "C"c
+                            If started Then gp.AddBezier(prevPoint, transformedB1, transformedB2, transformedPoint)
+                            prevPoint = transformedPoint
+                        Case "Z"c
+                            gp.CloseFigure()
+                            started = False
+                    End Select
+                Next
+
+                gp.Flatten()
+
+                Dim pathPoints() As PointF = gp.PathPoints
+                Dim types() As Byte = gp.PathTypes
+                Dim subPath As New List(Of IntPoint)()
+
+                For i As Integer = 0 To pathPoints.Length - 1
+                    Dim x As Double = pathPoints(i).X * scale
+                    Dim y As Double = pathPoints(i).Y * scale
+
+                    If Double.IsNaN(x) OrElse Double.IsNaN(y) OrElse
+               Double.IsInfinity(x) OrElse Double.IsInfinity(y) OrElse
+               Math.Abs(x) > maxRange OrElse Math.Abs(y) > maxRange Then
+                        Continue For
+                    End If
+
+                    subPath.Add(New IntPoint(CLng(x), CLng(y)))
+
+                    If (types(i) And &H80) <> 0 Then
+                        If subPath.Count > 2 Then
+                            Try
+                                clipper.AddPath(subPath, PolyType.ptSubject, True)
+                            Catch ex As Exception
+                            End Try
+                        End If
+                        subPath = New List(Of IntPoint)()
+                    End If
+                Next
+
+                If subPath.Count > 2 Then
                     Try
-                        clipper.AddPaths(holePaths, PolyType.ptClip, True)
+                        clipper.AddPath(subPath, PolyType.ptSubject, True)
                     Catch ex As Exception
-                        Debug.WriteLine($"Failed to add hole paths: {ex.Message}")
                     End Try
                 End If
             Next
 
-            ' Perform difference operation only if we have valid base paths
+            ' Union finale
             Dim solution As New List(Of List(Of IntPoint))()
-            Try
-                If hasValidPaths Then
-                    clipper.Execute(ClipType.ctDifference, solution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
-                Else
-                    Return New List(Of PathCommands)()
-                End If
-            Catch ex As Exception
-                Debug.WriteLine($"Clipper difference failed: {ex.Message}")
-                Return New List(Of PathCommands)()
-            End Try
+            clipper.Execute(ClipType.ctUnion, solution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
 
-            ' Convert back
-            result = ReconstructCurvesFromPolygons(solution, scale)
+            ' Conversion vers PathCommands
+            For Each poly In solution
+                If poly.Count = 0 Then Continue For
+
+                Dim first As New PointF(CSng(poly(0).X / scale), CSng(poly(0).Y / scale))
+                result.Add(New PathCommands(first, Nothing, Nothing, "M"c))
+
+                For i As Integer = 1 To poly.Count - 1
+                    Dim pt As New PointF(CSng(poly(i).X / scale), CSng(poly(i).Y / scale))
+                    result.Add(New PathCommands(pt, Nothing, Nothing, "L"c))
+                Next
+
+                result.Add(New PathCommands(first, Nothing, Nothing, "Z"c))
+            Next
+
             Return result
         End Function
 
@@ -3546,146 +3584,6 @@ Namespace Draw
         '------------------------------------------
         ' conversion PathCommands -> Clipper paths
         '------------------------------------------
-        Private Function ReconstructCurvesFromPolygons(polygons As List(Of List(Of IntPoint)), scale As Double) As List(Of PathCommands)
-            Dim result As New List(Of PathCommands)()
-
-            For Each polygon In polygons
-                If polygon.Count < 3 Then Continue For
-
-                ' Start new path
-                Dim firstPoint As PointF = IntPointToPoint(polygon(0), scale)
-                result.Add(New PathCommands(firstPoint, PointF.Empty, PointF.Empty, "M"c))
-
-                ' For now, use line segments - we'll add curve fitting later
-                For i As Integer = 1 To polygon.Count - 1
-                    Dim point As PointF = IntPointToPoint(polygon(i), scale)
-                    result.Add(New PathCommands(point, PointF.Empty, PointF.Empty, "L"c))
-                Next
-
-                ' Close the path
-                result.Add(New PathCommands(firstPoint, PointF.Empty, PointF.Empty, "Z"c))
-            Next
-
-            Return result
-        End Function
-
-        Private Function ConvertCurvesToClipperPaths(pathCommands As List(Of PathCommands), scale As Double) As List(Of List(Of IntPoint))
-            Dim paths As New List(Of List(Of IntPoint))()
-            Dim currentPath As New List(Of IntPoint)()
-
-            ' Clipper coordinate limits
-            Dim maxCoord As Long = &H3FFFFFFFFFFFFFFFL
-            Dim minCoord As Long = -maxCoord
-
-            For Each cmd In pathCommands
-                Try
-                    Select Case cmd.Pc
-                        Case "M"c
-                            If currentPath.Count > 0 Then
-                                paths.Add(New List(Of IntPoint)(currentPath))
-                                currentPath.Clear()
-                            End If
-                            Dim intPoint As Nullable(Of IntPoint) = SafePointToIntPoint(cmd.P, scale, minCoord, maxCoord)
-                            If intPoint.HasValue Then
-                                currentPath.Add(intPoint.Value)
-                            End If
-
-                        Case "L"c
-                            Dim intPoint As Nullable(Of IntPoint) = SafePointToIntPoint(cmd.P, scale, minCoord, maxCoord)
-                            If intPoint.HasValue Then
-                                currentPath.Add(intPoint.Value)
-                            End If
-
-                        Case "C"c ' Cubic Bézier
-                            If currentPath.Count > 0 Then
-                                Dim startPoint As PointF = IntPointToPoint(currentPath(currentPath.Count - 1), scale)
-                                Dim hasB1 As Boolean = Not cmd.b1.Equals(PointF.Empty)
-                                Dim hasB2 As Boolean = Not cmd.b2.Equals(PointF.Empty)
-
-                                If hasB1 AndAlso hasB2 Then
-                                    Dim bezierPoints As List(Of PointF) = SampleBezierCurve(
-                                startPoint, cmd.b1, cmd.b2, cmd.P, 8)
-
-                                    For i As Integer = 1 To bezierPoints.Count - 1
-                                        Dim bezierPoint As Nullable(Of IntPoint) = SafePointToIntPoint(bezierPoints(i), scale, minCoord, maxCoord)
-                                        If bezierPoint.HasValue Then
-                                            currentPath.Add(bezierPoint.Value)
-                                        End If
-                                    Next
-                                Else
-                                    ' Fallback: just add line to end point
-                                    Dim endPoint As Nullable(Of IntPoint) = SafePointToIntPoint(cmd.P, scale, minCoord, maxCoord)
-                                    If endPoint.HasValue Then
-                                        currentPath.Add(endPoint.Value)
-                                    End If
-                                End If
-                            Else
-                                ' Fallback: just add the end point
-                                Dim endPoint As Nullable(Of IntPoint) = SafePointToIntPoint(cmd.P, scale, minCoord, maxCoord)
-                                If endPoint.HasValue Then
-                                    currentPath.Add(endPoint.Value)
-                                End If
-                            End If
-
-                        Case "Z"c
-                            If currentPath.Count > 0 Then
-                                paths.Add(New List(Of IntPoint)(currentPath))
-                                currentPath.Clear()
-                            End If
-
-                        Case Else
-                            ' Handle other command types
-                            Dim point As Nullable(Of IntPoint) = SafePointToIntPoint(cmd.P, scale, minCoord, maxCoord)
-                            If point.HasValue Then
-                                currentPath.Add(point.Value)
-                            End If
-                    End Select
-                Catch ex As Exception
-                    ' Skip problematic commands but continue processing
-                    Debug.WriteLine($"Error processing command {cmd.Pc}: {ex.Message}")
-                End Try
-            Next
-
-            If currentPath.Count > 0 Then
-                paths.Add(currentPath)
-            End If
-
-            Return paths
-        End Function
-
-        Private Function SampleBezierCurve(p0 As PointF, p1 As PointF, p2 As PointF, p3 As PointF, samples As Integer) As List(Of PointF)
-            Dim points As New List(Of PointF)()
-            points.Add(p0)
-
-            For i As Integer = 1 To samples - 1
-                Dim t As Double = i / CDbl(samples)
-                points.Add(CalculateBezierPoint(p0, p1, p2, p3, t))
-            Next
-
-            points.Add(p3)
-            Return points
-        End Function
-
-        Private Function CalculateBezierPoint(p0 As PointF, p1 As PointF, p2 As PointF, p3 As PointF, t As Double) As PointF
-            Dim u As Double = 1 - t
-            Dim u2 As Double = u * u
-            Dim u3 As Double = u2 * u
-            Dim t2 As Double = t * t
-            Dim t3 As Double = t2 * t
-
-            Dim x As Double = u3 * p0.X + 3 * u2 * t * p1.X + 3 * u * t2 * p2.X + t3 * p3.X
-            Dim y As Double = u3 * p0.Y + 3 * u2 * t * p1.Y + 3 * u * t2 * p2.Y + t3 * p3.Y
-
-            Return New PointF(CSng(x), CSng(y))
-        End Function
-
-        Private Function PointToIntPoint(point As PointF, scale As Double) As IntPoint
-            Return New IntPoint(CLng(point.X * scale), CLng(point.Y * scale))
-        End Function
-
-        Private Function IntPointToPoint(intPoint As IntPoint, scale As Double) As PointF
-            Return New PointF(CSng(intPoint.X / scale), CSng(intPoint.Y / scale))
-        End Function
         Private Function ConvertToClipperPaths(pathList As List(Of PathCommands), scale As Double) As List(Of List(Of IntPoint))
             Dim paths As New List(Of List(Of IntPoint))()
             Dim subPath As New List(Of IntPoint)()
@@ -3712,29 +3610,7 @@ Namespace Draw
 #End Region
 
 #Region "Helper Methods"
-        Private Function SafePointToIntPoint(point As PointF, scale As Double, minCoord As Long, maxCoord As Long) As Nullable(Of IntPoint)
-            Try
-                ' Check for NaN or Infinity
-                If Single.IsNaN(point.X) OrElse Single.IsNaN(point.Y) OrElse
-           Single.IsInfinity(point.X) OrElse Single.IsInfinity(point.Y) Then
-                    Return Nothing
-                End If
 
-                ' Apply scaling with bounds checking
-                Dim scaledX As Long = CLng(point.X * scale)
-                Dim scaledY As Long = CLng(point.Y * scale)
-
-                ' Check if coordinates are within Clipper's allowed range
-                If scaledX < minCoord OrElse scaledX > maxCoord OrElse
-           scaledY < minCoord OrElse scaledY > maxCoord Then
-                    Return Nothing
-                End If
-
-                Return New IntPoint(scaledX, scaledY)
-            Catch ex As Exception
-                Return Nothing
-            End Try
-        End Function
 
         'Union that keeps **all** sub-paths (no filtering)
         Private Function UnionKeepAll(a As List(Of PathCommands),
@@ -4431,132 +4307,6 @@ Namespace Draw
             Return New PointF((p1.X + p2.X) / 2, (p1.Y + p2.Y) / 2)
         End Function
 
-
-        ''' <summary>
-        ''' Apply a DrawObject's transform (rotation around RotateStartPoint + translation) to a PathCommands list.
-        ''' Returns a new list with world-space coordinates.
-        ''' </summary>
-        Private Function ApplyObjectTransformToPathCommands(pc As List(Of PathCommands), obj As DrawObject) As List(Of PathCommands)
-            If pc Is Nothing Then Return New List(Of PathCommands)
-            Dim result As New List(Of PathCommands)
-
-            Dim angle As Double = obj.CurrentAngle
-            Dim hasRotation As Boolean = Math.Abs(angle) > 0.0001
-            Dim rotateCenter As PointF = obj.RotateStartPoint
-            Dim rad As Double = angle * Math.PI / 180.0
-
-            Dim objectPosition As PointF = GetObjectPosition(obj)
-
-            For Each cmd In pc
-                Try
-                    Dim p As PointF = cmd.P
-                    Dim b1 As PointF = If(Not cmd.b1.Equals(PointF.Empty), cmd.b1, PointF.Empty)
-                    Dim b2 As PointF = If(Not cmd.b2.Equals(PointF.Empty), cmd.b2, PointF.Empty)
-
-                    ' Validate original points
-                    If Not IsValidPoint(p) Then Continue For
-
-                    ' Apply object position translation
-                    p = New PointF(p.X + objectPosition.X, p.Y + objectPosition.Y)
-                    If Not b1.Equals(PointF.Empty) AndAlso IsValidPoint(b1) Then
-                        b1 = New PointF(b1.X + objectPosition.X, b1.Y + objectPosition.Y)
-                    Else
-                        b1 = PointF.Empty
-                    End If
-                    If Not b2.Equals(PointF.Empty) AndAlso IsValidPoint(b2) Then
-                        b2 = New PointF(b2.X + objectPosition.X, b2.Y + objectPosition.Y)
-                    Else
-                        b2 = PointF.Empty
-                    End If
-
-                    ' Apply rotation
-                    If hasRotation Then
-                        p = RotatePoint(p, rotateCenter, rad)
-                        If Not b1.Equals(PointF.Empty) Then b1 = RotatePoint(b1, rotateCenter, rad)
-                        If Not b2.Equals(PointF.Empty) Then b2 = RotatePoint(b2, rotateCenter, rad)
-                    End If
-
-                    ' Validate transformed points
-                    If Not IsValidPoint(p) Then Continue For
-
-                    ' Create new PathCommands
-                    Dim newCmd As PathCommands
-                    If Not b1.Equals(PointF.Empty) AndAlso Not b2.Equals(PointF.Empty) AndAlso
-               IsValidPoint(b1) AndAlso IsValidPoint(b2) Then
-                        newCmd = New PathCommands(p, b1, b2, cmd.Pc)
-                    ElseIf Not b1.Equals(PointF.Empty) AndAlso IsValidPoint(b1) Then
-                        newCmd = New PathCommands(p, b1, PointF.Empty, cmd.Pc)
-                    Else
-                        newCmd = New PathCommands(p, PointF.Empty, PointF.Empty, cmd.Pc)
-                    End If
-
-                    result.Add(newCmd)
-                Catch ex As Exception
-                    ' Skip problematic commands but continue processing
-                    Debug.WriteLine($"Error transforming command: {ex.Message}")
-                End Try
-            Next
-
-            Return result
-        End Function
-
-        Private Function IsValidPoint(point As PointF) As Boolean
-            Return Not (Single.IsNaN(point.X) OrElse Single.IsNaN(point.Y) OrElse
-                Single.IsInfinity(point.X) OrElse Single.IsInfinity(point.Y))
-        End Function
-
-        Private Function GetObjectPosition(obj As DrawObject) As PointF
-            ' Implement this based on your DrawObject structure
-            ' This might be obj.Rectangle.Location or another property
-            Try
-                Return obj.Rectangle.Location
-            Catch
-                Return PointF.Empty
-            End Try
-        End Function
-
-        Private Function RotatePoint(pt As PointF, center As PointF, rad As Double) As PointF
-            Dim dx As Double = pt.X - center.X
-            Dim dy As Double = pt.Y - center.Y
-            Dim cosA As Double = Math.Cos(rad)
-            Dim sinA As Double = Math.Sin(rad)
-            Dim rx As Double = dx * cosA - dy * sinA
-            Dim ry As Double = dx * sinA + dy * cosA
-            Return New PointF(CSng(rx + center.X), CSng(ry + center.Y))
-        End Function
-
-
-        ''' <summary>
-        ''' Split cubic Bezier (p0,p1,p2,p3) at t into (p0,a1,a2,mid) and (mid,b2,b1,p3)
-        ''' </summary>
-        Private Sub SplitCubicBezier(p0 As PointF, c1 As PointF, c2 As PointF, p3 As PointF, t As Double,
-                             ByRef left0 As PointF, ByRef left1 As PointF, ByRef left2 As PointF, ByRef left3 As PointF,
-                             ByRef right0 As PointF, ByRef right1 As PointF, ByRef right2 As PointF, ByRef right3 As PointF)
-            ' De Casteljau
-            Dim p01 As PointF = Lerp(p0, c1, t)
-            Dim p12 As PointF = Lerp(c1, c2, t)
-            Dim p23 As PointF = Lerp(c2, p3, t)
-
-            Dim p012 As PointF = Lerp(p01, p12, t)
-            Dim p123 As PointF = Lerp(p12, p23, t)
-
-            Dim p0123 As PointF = Lerp(p012, p123, t) ' mid point
-
-            left0 = p0
-            left1 = p01
-            left2 = p012
-            left3 = p0123
-
-            right0 = p0123
-            right1 = p123
-            right2 = p23
-            right3 = p3
-        End Sub
-
-        Private Function Lerp(a As PointF, b As PointF, t As Double) As PointF
-            Return New PointF(CSng(a.X + (b.X - a.X) * t), CSng(a.Y + (b.Y - a.Y) * t))
-        End Function
-
 #End Region
 
 #Region "Path Manipulation"
@@ -5036,3 +4786,4 @@ Namespace Draw
 
     End Class
 End Namespace
+
