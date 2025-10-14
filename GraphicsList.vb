@@ -1432,7 +1432,7 @@ Namespace Draw
                 Case 0 ' Union
                     Pc = MergeOLD.MergePathsUnion(ObjList)
                 Case 1 ' Punch Out
-                    Pc = MergeOLD.MergeOut(ObjList)
+                    Pc = MergeOLD.MergePathsPunchOut(ObjList)
                 Case 2 ' Intersect
                     Pc = MergeOLD.MergePathsIntersect(ObjList)
                 Case Else
@@ -1912,7 +1912,7 @@ Namespace Draw
             ''' <summary>
             ''' Performs a punch out operation (first object minus all others)
             ''' </summary>
-            Public Function MergeOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
+            Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
                 If drawObjects.Count = 0 Then Return New List(Of PathCommands)
                 If drawObjects.Count = 1 Then Return drawObjects(0).PathCommands
 
@@ -2917,7 +2917,7 @@ Namespace Draw
                 Case 0 ' Union
                     Pc = MergePathsUnion(ObjList)
                 Case 1 ' Punch Out
-                    Pc = MergeOut(ObjList)
+                    Pc = MergePathsPunchOut(ObjList)
                 Case 2 ' Intersect
                     Pc = MergePathsIntersect(ObjList)
                 Case Else
@@ -2987,29 +2987,7 @@ Namespace Draw
             Return rotatedCommands
         End Function
 
-        ''' <summary>
-        ''' Gets the path commands after applying rotation transformation
-        ''' </summary>
-        Private Function GetRotatedPathCommands(drawObj As DrawObject) As List(Of PathCommands)
-            If drawObj.CurrentAngle = 0 Then Return drawObj.PathCommands
 
-            ' Create a rotation matrix
-            Dim rotationMatrix As New Matrix()
-            rotationMatrix.RotateAt(drawObj.CurrentAngle, drawObj.origin)
-
-            ' Transform all points in the path commands
-            Dim rotatedCommands As New List(Of PathCommands)()
-
-            For Each cmd As PathCommands In drawObj.PathCommands
-                Dim rotatedPoint As PointF = TransformPoint(cmd.P, rotationMatrix)
-                Dim rotatedB1 As PointF = If(cmd.b1 <> Nothing, TransformPoint(cmd.b1, rotationMatrix), Nothing)
-                Dim rotatedB2 As PointF = If(cmd.b2 <> Nothing, TransformPoint(cmd.b2, rotationMatrix), Nothing)
-
-                rotatedCommands.Add(New PathCommands(rotatedPoint, rotatedB1, rotatedB2, cmd.Pc))
-            Next
-
-            Return rotatedCommands
-        End Function
 
         ''' <summary>
         ''' Transforms a point using a matrix
@@ -3020,75 +2998,268 @@ Namespace Draw
             Return points(0)
         End Function
 
-
         Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
             Dim result As New List(Of PathCommands)
             If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then Return result
-        
-            Const scale As Double = 10.0
-            Dim clipper As New ClipperLib.Clipper()
-            Dim firstDone As Boolean = False
-        
+
+            Dim scale As Double = 10.0
+            Dim maxRange As Double = 9.0E+18 / scale
+
+            Dim clipper As New Clipper()
+
             For Each obj In drawObjects
-                '1. rotate the path commands
-                Dim rotatedCmds As List(Of PathCommands) = GetRotatedPathCommands(obj)
-        
-                '2. convert to Clipper integer polygons
-                Dim polys As List(Of List(Of IntPoint)) =
-                    ConvertToClipperPaths(rotatedCmds, scale)
-        
-                '3. first shape = subject, rest = clip (holes)
-                If Not firstDone Then
-                    clipper.AddPaths(polys, ClipperLib.PolyType.ptSubject, True)
-                    firstDone = True
-                Else
-                    clipper.AddPaths(polys, ClipperLib.PolyType.ptClip, True)
+                Dim gp As New GraphicsPath()
+                Dim prevPoint As PointF = Nothing
+                Dim started As Boolean = False
+
+                ' Apply rotation transformation
+                Dim rotationMatrix As New Matrix()
+                If obj.CurrentAngle <> 0 Then
+                    rotationMatrix.RotateAt(obj.CurrentAngle, obj.origin)
+                End If
+
+                For Each cmd As PathCommands In obj.PathCommands
+                    ' Transform the point using rotation
+                    Dim transformedPoint As PointF = cmd.P
+                    Dim transformedB1 As PointF = If(cmd.b1 <> Nothing, cmd.b1, Nothing)
+                    Dim transformedB2 As PointF = If(cmd.b2 <> Nothing, cmd.b2, Nothing)
+
+                    If obj.CurrentAngle <> 0 Then
+                        Dim pointArray() As PointF = {transformedPoint}
+                        rotationMatrix.TransformPoints(pointArray)
+                        transformedPoint = pointArray(0)
+
+                        If transformedB1 <> Nothing Then
+                            Dim b1Array() As PointF = {transformedB1}
+                            rotationMatrix.TransformPoints(b1Array)
+                            transformedB1 = b1Array(0)
+                        End If
+
+                        If transformedB2 <> Nothing Then
+                            Dim b2Array() As PointF = {transformedB2}
+                            rotationMatrix.TransformPoints(b2Array)
+                            transformedB2 = b2Array(0)
+                        End If
+                    End If
+
+                    Select Case cmd.Pc
+                        Case "M"c
+                            gp.StartFigure()
+                            prevPoint = transformedPoint
+                            started = True
+                        Case "L"c
+                            If started Then gp.AddLine(prevPoint, transformedPoint)
+                            prevPoint = transformedPoint
+                        Case "C"c
+                            If started Then gp.AddBezier(prevPoint, transformedB1, transformedB2, transformedPoint)
+                            prevPoint = transformedPoint
+                        Case "Z"c
+                            gp.CloseFigure()
+                            started = False
+                    End Select
+                Next
+
+                gp.Flatten()
+
+                Dim pathPoints() As PointF = gp.PathPoints
+                Dim types() As Byte = gp.PathTypes
+                Dim subPath As New List(Of IntPoint)()
+
+                For i As Integer = 0 To pathPoints.Length - 1
+                    Dim x As Double = pathPoints(i).X * scale
+                    Dim y As Double = pathPoints(i).Y * scale
+
+                    If Double.IsNaN(x) OrElse Double.IsNaN(y) OrElse
+               Double.IsInfinity(x) OrElse Double.IsInfinity(y) OrElse
+               Math.Abs(x) > maxRange OrElse Math.Abs(y) > maxRange Then
+                        Continue For
+                    End If
+
+                    subPath.Add(New IntPoint(CLng(x), CLng(y)))
+
+                    If (types(i) And &H80) <> 0 Then
+                        If subPath.Count > 2 Then
+                            Try
+                                clipper.AddPath(subPath, PolyType.ptSubject, True)
+                            Catch ex As Exception
+                            End Try
+                        End If
+                        subPath = New List(Of IntPoint)()
+                    End If
+                Next
+
+                If subPath.Count > 2 Then
+                    Try
+                        clipper.AddPath(subPath, PolyType.ptSubject, True)
+                    Catch ex As Exception
+                    End Try
                 End If
             Next
-        
-            '4. perform A - B
+
+            ' Union finale
             Dim solution As New List(Of List(Of IntPoint))()
-            clipper.Execute(ClipperLib.ClipType.ctDifference, solution,
-                            ClipperLib.PolyFillType.pftNonZero,
-                            ClipperLib.PolyFillType.pftNonZero)
-        
-            '5. convert back to single-precision PathCommands
-            Return ClipperToPathCommands(solution, scale)
+            clipper.Execute(ClipType.ctUnion, solution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
+
+            ' Conversion vers PathCommands
+            For Each poly In solution
+                If poly.Count = 0 Then Continue For
+
+                Dim first As New PointF(CSng(poly(0).X / scale), CSng(poly(0).Y / scale))
+                result.Add(New PathCommands(first, Nothing, Nothing, "M"c))
+
+                For i As Integer = 1 To poly.Count - 1
+                    Dim pt As New PointF(CSng(poly(i).X / scale), CSng(poly(i).Y / scale))
+                    result.Add(New PathCommands(pt, Nothing, Nothing, "L"c))
+                Next
+
+                result.Add(New PathCommands(first, Nothing, Nothing, "Z"c))
+            Next
+
+            Return result
         End Function
 
-
-    
         Public Function MergePathsIntersect(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
             Dim result As New List(Of PathCommands)
             If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then Return result
-        
-            Const scale As Double = 10.0
-            Dim clipper As New ClipperLib.Clipper()
-            Dim firstDone As Boolean = False
-        
+            If drawObjects.Count = 1 Then Return GetRotatedPathCommands(drawObjects(0))
+
+            Dim scale As Double = 10.0
+            Dim maxRange As Double = 9.0E+18 / scale
+
+            ' Convert all shapes to lists of polygons with rotation applied
+            Dim objectPolys As New List(Of List(Of List(Of IntPoint)))()
+
             For Each obj In drawObjects
-                Dim rotatedCmds As List(Of PathCommands) = GetRotatedPathCommands(obj)
-                Dim polys As List(Of List(Of IntPoint)) =
-                    ConvertToClipperPaths(rotatedCmds, scale)
-        
-                If Not firstDone Then
-                    clipper.AddPaths(polys, ClipperLib.PolyType.ptSubject, True)
-                    firstDone = True
-                Else
-                    clipper.AddPaths(polys, ClipperLib.PolyType.ptClip, True)
+                Dim gp As New GraphicsPath()
+                Dim prevPoint As PointF = Nothing
+                Dim started As Boolean = False
+
+                ' Apply rotation transformation
+                Dim rotationMatrix As New Matrix()
+                If obj.CurrentAngle <> 0 Then
+                    rotationMatrix.RotateAt(obj.CurrentAngle, obj.origin)
                 End If
+
+                For Each cmd As PathCommands In obj.PathCommands
+                    ' Transform points if rotation is needed
+                    Dim transformedPoint As PointF = cmd.P
+                    Dim transformedB1 As PointF = If(cmd.b1 <> Nothing, cmd.b1, Nothing)
+                    Dim transformedB2 As PointF = If(cmd.b2 <> Nothing, cmd.b2, Nothing)
+
+                    If obj.CurrentAngle <> 0 Then
+                        Dim pointArray() As PointF = {transformedPoint}
+                        rotationMatrix.TransformPoints(pointArray)
+                        transformedPoint = pointArray(0)
+
+                        If transformedB1 <> Nothing Then
+                            Dim b1Array() As PointF = {transformedB1}
+                            rotationMatrix.TransformPoints(b1Array)
+                            transformedB1 = b1Array(0)
+                        End If
+
+                        If transformedB2 <> Nothing Then
+                            Dim b2Array() As PointF = {transformedB2}
+                            rotationMatrix.TransformPoints(b2Array)
+                            transformedB2 = b2Array(0)
+                        End If
+                    End If
+
+                    Select Case cmd.Pc
+                        Case "M"c
+                            gp.StartFigure()
+                            prevPoint = transformedPoint
+                            started = True
+                        Case "L"c
+                            If started Then gp.AddLine(prevPoint, transformedPoint)
+                            prevPoint = transformedPoint
+                        Case "C"c
+                            If started Then gp.AddBezier(prevPoint, transformedB1, transformedB2, transformedPoint)
+                            prevPoint = transformedPoint
+                        Case "Z"c
+                            gp.CloseFigure()
+                            started = False
+                    End Select
+                Next
+
+                ' Flatten the path to convert curves to line segments
+                gp.Flatten()
+
+                Dim pts() As PointF = gp.PathPoints
+                Dim types() As Byte = gp.PathTypes
+
+                Dim subPaths As New List(Of List(Of IntPoint))
+                Dim subPath As New List(Of IntPoint)
+
+                For i As Integer = 0 To pts.Length - 1
+                    Dim x As Double = pts(i).X * scale
+                    Dim y As Double = pts(i).Y * scale
+
+                    ' Validate coordinates
+                    If Double.IsNaN(x) OrElse Double.IsNaN(y) OrElse
+               Double.IsInfinity(x) OrElse Double.IsInfinity(y) Then Continue For
+                    If Math.Abs(x) > maxRange OrElse Math.Abs(y) > maxRange Then Continue For
+
+                    subPath.Add(New IntPoint(CLng(x), CLng(y)))
+
+                    ' Check if this is the end of a figure
+                    If (types(i) And &H80) <> 0 Then
+                        If subPath.Count > 2 Then subPaths.Add(New List(Of IntPoint)(subPath))
+                        subPath.Clear()
+                    End If
+                Next
+
+                ' Add any remaining path
+                If subPath.Count > 2 Then subPaths.Add(subPath)
+
+                If subPaths.Count > 0 Then objectPolys.Add(subPaths)
             Next
-        
-            Dim solution As New List(Of List(Of IntPoint))()
-            clipper.Execute(ClipperLib.ClipType.ctIntersection, solution,
-                            ClipperLib.PolyFillType.pftNonZero,
-                            ClipperLib.PolyFillType.pftNonZero)
-        
-            Return ClipperToPathCommands(solution, scale)
+
+            ' If we have less than 2 valid objects, cannot intersect
+            If objectPolys.Count < 2 Then Return result
+
+            ' Start intersection with the first object
+            Dim accumulated As List(Of List(Of IntPoint)) = objectPolys(0)
+
+            ' Intersect successively with each following object
+            For i As Integer = 1 To objectPolys.Count - 1
+                Dim clipper As New Clipper()
+
+                ' Add accumulated result as subject
+                clipper.AddPaths(accumulated, PolyType.ptSubject, True)
+
+                ' Add next object as clip
+                clipper.AddPaths(objectPolys(i), PolyType.ptClip, True)
+
+                Dim solution As New List(Of List(Of IntPoint))()
+
+                ' Execute intersection
+                clipper.Execute(ClipType.ctIntersection, solution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
+
+                ' Update accumulated with intersection result
+                accumulated = solution
+
+                ' Early exit if intersection becomes empty
+                If accumulated.Count = 0 Then Exit For
+            Next
+
+            ' Convert final result to PathCommands
+            For Each poly In accumulated
+                If poly.Count = 0 Then Continue For
+
+                Dim first As New PointF(CSng(poly(0).X / scale), CSng(poly(0).Y / scale))
+                result.Add(New PathCommands(first, Nothing, Nothing, "M"c))
+
+                For j As Integer = 1 To poly.Count - 1
+                    Dim pt As New PointF(CSng(poly(j).X / scale), CSng(poly(j).Y / scale))
+                    result.Add(New PathCommands(pt, Nothing, Nothing, "L"c))
+                Next
+
+                ' Close the path
+                result.Add(New PathCommands(first, Nothing, Nothing, "Z"c))
+            Next
+
+            Return result
         End Function
-
-
-
 
 
 #Region “New Boundary-Tracing Core (drop-in replacement)”
@@ -3514,97 +3685,70 @@ Namespace Draw
 
             Return result
         End Function
-        '------------------------------------------
-        ' conversion PathCommands -> Clipper paths
-        '------------------------------------------
-        Private Function ConvertToClipperPaths(pathList As List(Of PathCommands), scale As Double) As List(Of List(Of IntPoint))
-            Dim paths As New List(Of List(Of IntPoint))()
-            Dim subPath As New List(Of IntPoint)()
-            For Each cmd In pathList
-                Select Case cmd.Pc
-                    Case "M"c
-                        If subPath.Count > 0 Then
-                            paths.Add(New List(Of IntPoint)(subPath))
-                            subPath.Clear()
-                        End If
-                        subPath.Add(New IntPoint(CLng(cmd.P.X * scale), CLng(cmd.P.Y * scale)))
-                    Case "L"c
-                        subPath.Add(New IntPoint(CLng(cmd.P.X * scale), CLng(cmd.P.Y * scale)))
-                    Case "Z"c
-                        If subPath.Count > 0 Then
-                            paths.Add(New List(Of IntPoint)(subPath))
-                            subPath.Clear()
-                        End If
-                End Select
-            Next
-            If subPath.Count > 0 Then paths.Add(subPath)
-            Return paths
-        End Function
+
 #End Region
 
 #Region "Helper Methods"
-'Applies obj.CurrentAngle around obj.origin
-Private Function GetRotatedPathCommands(obj As DrawObject) As List(Of PathCommands)
-    If obj.CurrentAngle = 0 Then Return obj.PathCommands
+        Private Function GetRotatedPathCommands(obj As DrawObject) As List(Of PathCommands)
+            If obj.CurrentAngle = 0 Then Return obj.PathCommands
 
-    Dim m As New Matrix
-    m.RotateAt(obj.CurrentAngle, obj.origin)
+            Dim m As New Matrix
+            m.RotateAt(obj.CurrentAngle, obj.origin)
 
-    Dim out As New List(Of PathCommands)
-    For Each cmd In obj.PathCommands
-        Dim p As PointF() = {cmd.P}
-        m.TransformPoints(p)
+            Dim out As New List(Of PathCommands)
+            For Each cmd In obj.PathCommands
+                Dim p As PointF() = {cmd.P}
+                m.TransformPoints(p)
 
-        Dim b1 As PointF = Nothing, b2 As PointF = Nothing
-        If cmd.b1.HasValue Then
-            Dim t1() As PointF = {cmd.b1.Value} : m.TransformPoints(t1) : b1 = t1(0)
-            Dim t2() As PointF = {cmd.b2.Value} : m.TransformPoints(t2) : b2 = t2(0)
-        End If
-
-        out.Add(New PathCommands(p(0), b1, b2, cmd.Pc))
-    Next
-    Return out
-End Function
-
-'PathCommands -> Clipper integer polygons
-Private Function ConvertToClipperPaths(cmds As List(Of PathCommands), scale As Double) As List(Of List(Of IntPoint))
-    Dim paths As New List(Of List(Of IntPoint))
-    Dim cur As New List(Of IntPoint)
-
-    For Each c In cmds
-        Select Case c.Pc
-            Case "M"c
-                If cur.Count > 0 Then paths.Add(New List(Of IntPoint)(cur))
-                cur.Clear()
-                cur.Add(New IntPoint(CLng(c.P.X * scale), CLng(c.P.Y * scale)))
-            Case "L"c, "C"c 'treat curves as lines for Clipper
-                cur.Add(New IntPoint(CLng(c.P.X * scale), CLng(c.P.Y * scale)))
-            Case "Z"c
-                If cur.Count > 0 Then
-                    cur.Add(New IntPoint(cur(0))) 'close
-                    paths.Add(New List(Of IntPoint)(cur))
-                    cur.Clear()
+                Dim b1 As PointF = Nothing, b2 As PointF = Nothing
+                If cmd.b1 <> Nothing Then          'structure ≠ Nothing
+                    Dim t1() As PointF = {cmd.b1} : m.TransformPoints(t1) : b1 = t1(0)
+                    Dim t2() As PointF = {cmd.b2} : m.TransformPoints(t2) : b2 = t2(0)
                 End If
-        End Select
-    Next
-    If cur.Count > 0 Then paths.Add(cur)
-    Return paths
-End Function
 
-'Clipper solution -> PathCommands
-Private Function ClipperToPathCommands(solution As List(Of List(Of IntPoint)), scale As Double) As List(Of PathCommands)
-    Dim out As New List(Of PathCommands)
-    For Each poly In solution
-        If poly.Count = 0 Then Continue For
-        out.Add(New PathCommands(New PointF(CSng(poly(0).X / scale), CSng(poly(0).Y / scale)), Nothing, Nothing, "M"c))
-        For i = 1 To poly.Count - 1
-            out.Add(New PathCommands(New PointF(CSng(poly(i).X / scale), CSng(poly(i).Y / scale)), Nothing, Nothing, "L"c))
-        Next
-        out.Add(New PathCommands(New PointF(CSng(poly(0).X / scale), CSng(poly(0).Y / scale)), Nothing, Nothing, "Z"c))
-    Next
-    Return out
-End Function
+                out.Add(New PathCommands(p(0), b1, b2, cmd.Pc))
+            Next
+            Return out
+        End Function
 
+        'PathCommands -> Clipper integer polygons
+        Private Function ConvertToClipperPaths(cmds As List(Of PathCommands), scale As Double) As List(Of List(Of IntPoint))
+            Dim paths As New List(Of List(Of IntPoint))
+            Dim cur As New List(Of IntPoint)
+
+            For Each c In cmds
+                Select Case c.Pc
+                    Case "M"c
+                        If cur.Count > 0 Then paths.Add(New List(Of IntPoint)(cur))
+                        cur.Clear()
+                        cur.Add(New IntPoint(CLng(c.P.X * scale), CLng(c.P.Y * scale)))
+                    Case "L"c, "C"c 'treat curves as lines for Clipper
+                        cur.Add(New IntPoint(CLng(c.P.X * scale), CLng(c.P.Y * scale)))
+                    Case "Z"c
+                        If cur.Count > 0 Then
+                            cur.Add(New IntPoint(cur(0))) 'close
+                            paths.Add(New List(Of IntPoint)(cur))
+                            cur.Clear()
+                        End If
+                End Select
+            Next
+            If cur.Count > 0 Then paths.Add(cur)
+            Return paths
+        End Function
+
+        'Clipper solution -> PathCommands
+        Private Function ClipperToPathCommands(solution As List(Of List(Of IntPoint)), scale As Double) As List(Of PathCommands)
+            Dim out As New List(Of PathCommands)
+            For Each poly In solution
+                If poly.Count = 0 Then Continue For
+                out.Add(New PathCommands(New PointF(CSng(poly(0).X / scale), CSng(poly(0).Y / scale)), Nothing, Nothing, "M"c))
+                For i = 1 To poly.Count - 1
+                    out.Add(New PathCommands(New PointF(CSng(poly(i).X / scale), CSng(poly(i).Y / scale)), Nothing, Nothing, "L"c))
+                Next
+                out.Add(New PathCommands(New PointF(CSng(poly(0).X / scale), CSng(poly(0).Y / scale)), Nothing, Nothing, "Z"c))
+            Next
+            Return out
+        End Function
         ''Union that keeps **all** sub-paths (no filtering)
         'Private Function UnionKeepAll(a As List(Of PathCommands),
         '                      b As List(Of PathCommands)) As List(Of PathCommands)
@@ -4779,4 +4923,3 @@ End Function
 
     End Class
 End Namespace
-
