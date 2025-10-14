@@ -3104,23 +3104,44 @@ Namespace Draw
             Dim maxRange As Double = 9.0E+18 / scale
             Dim clipper As New Clipper()
 
-            ' --- Build all rotated paths ---
+            ' helper: evaluate cubic bezier at t
+            Dim GetBezierPoint As Func(Of PointF, PointF, PointF, PointF, Double, PointF) =
+        Function(p0, p1, p2, p3, t)
+            Dim u = 1.0 - t
+            Dim tt = t * t
+            Dim uu = u * u
+            Dim uuu = uu * u
+            Dim ttt = tt * t
+            Dim x = CSng(uuu * p0.X + 3 * uu * t * p1.X + 3 * u * tt * p2.X + ttt * p3.X)
+            Dim y = CSng(uuu * p0.Y + 3 * uu * t * p1.Y + 3 * u * tt * p2.Y + ttt * p3.Y)
+            Return New PointF(x, y)
+        End Function
+
+            ' For each object, build a set of subpaths (honouring 'M') and sample curves adaptively
             For Each obj In drawObjects
-                Dim gp As New GraphicsPath()
                 Dim prevPoint As PointF = Nothing
                 Dim started As Boolean = False
 
                 Dim rotationMatrix As New Matrix()
-                If obj.CurrentAngle <> 0 Then
-                    rotationMatrix.RotateAt(obj.CurrentAngle, obj.origin)
-                End If
+                If obj.CurrentAngle <> 0 Then rotationMatrix.RotateAt(obj.CurrentAngle, obj.origin)
 
-                ' Build the shape path with rotation
+                Dim currentSubPath As New List(Of IntPoint)
+                Dim AddCurrentSubPathToClipper = Sub()
+                                                     If currentSubPath IsNot Nothing AndAlso currentSubPath.Count > 2 Then
+                                                         Try
+                                                             clipper.AddPath(currentSubPath, PolyType.ptSubject, True)
+                                                         Catch
+                                                         End Try
+                                                     End If
+                                                     currentSubPath = New List(Of IntPoint)()
+                                                 End Sub
+
                 For Each cmd As PathCommands In obj.PathCommands
                     Dim p As PointF = cmd.P
                     Dim b1 As PointF = cmd.b1
                     Dim b2 As PointF = cmd.b2
 
+                    ' apply rotation if needed
                     If obj.CurrentAngle <> 0 Then
                         Dim arr() As PointF = {p}
                         rotationMatrix.TransformPoints(arr)
@@ -3139,79 +3160,82 @@ Namespace Draw
 
                     Select Case cmd.Pc
                         Case "M"c
-                            gp.StartFigure()
+                            ' start a fresh subpath — preserve move semantics
+                            AddCurrentSubPathToClipper()
                             prevPoint = p
                             started = True
+                            ' add the move point as the first point of the subpath
+                            Dim xi As Long = CLng(prevPoint.X * scale)
+                            Dim yi As Long = CLng(prevPoint.Y * scale)
+                            If Not (Double.IsNaN(prevPoint.X) Or Double.IsNaN(prevPoint.Y)) Then
+                                currentSubPath.Add(New IntPoint(xi, yi))
+                            End If
 
                         Case "L"c
-                            If started Then gp.AddLine(prevPoint, p)
+                            If started Then
+                                ' add endpoint
+                                Dim xi As Long = CLng(p.X * scale)
+                                Dim yi As Long = CLng(p.Y * scale)
+                                If Not (Double.IsNaN(xi) Or Double.IsNaN(yi)) Then currentSubPath.Add(New IntPoint(xi, yi))
+                            End If
                             prevPoint = p
 
                         Case "C"c
-                            If started Then gp.AddBezier(prevPoint, b1, b2, p)
+                            If started Then
+                                ' adaptive sampling for the bezier segment: sample based on chord length
+                                Dim chordLen As Double = Math.Sqrt((p.X - prevPoint.X) ^ 2 + (p.Y - prevPoint.Y) ^ 2)
+                                Dim ctrlLen As Double = Math.Sqrt((b1.X - prevPoint.X) ^ 2 + (b1.Y - prevPoint.Y) ^ 2) + Math.Sqrt((b2.X - p.X) ^ 2 + (b2.Y - p.Y) ^ 2)
+                                ' heuristic sample count: proportional to curvature & length (min 8, max 128)
+                                Dim sampleCount As Integer = CInt(Math.Min(128, Math.Max(8, Math.Ceiling((chordLen + ctrlLen) * 0.5))))
+                                For s As Integer = 1 To sampleCount
+                                    Dim t As Double = s / sampleCount
+                                    Dim ptSample As PointF = GetBezierPoint(prevPoint, b1, b2, p, t)
+                                    Dim xi As Long = CLng(ptSample.X * scale)
+                                    Dim yi As Long = CLng(ptSample.Y * scale)
+                                    If Math.Abs(xi) <= CLng(maxRange) And Math.Abs(yi) <= CLng(maxRange) Then
+                                        currentSubPath.Add(New IntPoint(xi, yi))
+                                    End If
+                                Next
+                            End If
                             prevPoint = p
 
                         Case "Z"c
-                            gp.CloseFigure()
-                            started = False
+                            ' close subpath
+                            If started Then
+                                ' ensure closure by repeating first point if needed
+                                If currentSubPath.Count > 0 Then
+                                    Dim firstPt = currentSubPath(0)
+                                    currentSubPath.Add(firstPt)
+                                End If
+                                AddCurrentSubPathToClipper()
+                                started = False
+                            End If
                     End Select
                 Next
 
-                ' Convert GraphicsPath to integer Clipper coordinates
-                Dim pathPoints() As PointF = gp.PathPoints
-                Dim types() As Byte = gp.PathTypes
-                Dim subPath As New List(Of IntPoint)
-
-                For i As Integer = 0 To pathPoints.Length - 1
-                    Dim x As Double = pathPoints(i).X * scale
-                    Dim y As Double = pathPoints(i).Y * scale
-
-                    If Double.IsNaN(x) OrElse Double.IsNaN(y) OrElse
-               Double.IsInfinity(x) OrElse Double.IsInfinity(y) OrElse
-               Math.Abs(x) > maxRange OrElse Math.Abs(y) > maxRange Then Continue For
-
-                    subPath.Add(New IntPoint(CLng(x), CLng(y)))
-
-                    If (types(i) And &H80) <> 0 Then
-                        If subPath.Count > 2 Then
-                            Try
-                                clipper.AddPath(subPath, PolyType.ptSubject, True)
-                            Catch
-                            End Try
-                        End If
-                        subPath = New List(Of IntPoint)
-                    End If
-                Next
-
-                If subPath.Count > 2 Then
-                    Try
-                        clipper.AddPath(subPath, PolyType.ptSubject, True)
-                    Catch
-                    End Try
-                End If
+                ' finish last subpath
+                AddCurrentSubPathToClipper()
             Next
 
-            ' --- Perform PUNCH-OUT (difference) ---
+            ' perform difference (punch-out)
             Dim solution As New List(Of List(Of IntPoint))()
             clipper.Execute(ClipType.ctDifference, solution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
 
-            ' --- Convert back into PathCommands ---
+            ' convert solution back to PathCommands (we output L commands - dense so visually smooth)
             For Each poly In solution
-                If poly.Count = 0 Then Continue For
-
+                If poly.Count < 3 Then Continue For
                 Dim first As New PointF(CSng(poly(0).X / scale), CSng(poly(0).Y / scale))
                 result.Add(New PathCommands(first, Nothing, Nothing, "M"c))
-
                 For i As Integer = 1 To poly.Count - 1
                     Dim pt As New PointF(CSng(poly(i).X / scale), CSng(poly(i).Y / scale))
                     result.Add(New PathCommands(pt, Nothing, Nothing, "L"c))
                 Next
-
                 result.Add(New PathCommands(first, Nothing, Nothing, "Z"c))
             Next
 
             Return result
         End Function
+
 
 
 
