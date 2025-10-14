@@ -2226,35 +2226,46 @@ Namespace Draw
             ''' <summary>
             ''' Improved version of MarkPathSegments with better inside/outside detection
             ''' </summary>
-            Private Sub MarkPathSegmentsImproved(pathsToMark As List(Of BezierPath), otherPaths As List(Of BezierPath), keepInsideSegments As Boolean)
-                ' For each path to mark
+            Private Sub MarkPathSegmentsImproved(pathsToMark As List(Of BezierPath),
+                                     otherPaths As List(Of BezierPath),
+                                     keepInsideSegments As Boolean,
+                                     srcObj As DrawObject)          '<<<< NEW
+
+                'Build the same rotation matrix that was used for the path
+                Dim rot As New Matrix
+                If srcObj.CurrentAngle <> 0 Then rot.RotateAt(srcObj.CurrentAngle, srcObj.origin)
+
                 For Each path In pathsToMark
-                    ' For each segment
-                    For Each segment In path.Segments
-                        ' Test multiple points along the segment for more accurate inside/outside detection
-                        Dim testPoints As Integer = 3 ' Use multiple test points per segment
-                        Dim insideCount As Integer = 0
+                    For Each seg In path.Segments
+                        Dim votes As Integer = 0
+                        For t = 0.2 To 0.8 Step 0.2          '4 samples
+                            Dim pt As PointF = seg.PointAt(t)
 
-                        For i As Integer = 1 To testPoints
-                            Dim t As Double = i / (testPoints + 1) ' Evenly distribute test points along segment
-                            Dim testPoint As PointF = segment.PointAt(t)
+                            '----------- rotate test point -----------
+                            Dim pts() As PointF = {pt}
+                            rot.TransformPoints(pts)
+                            pt = pts(0)
+                            '-----------------------------------------
 
-                            ' Check if this point is inside any other path
-                            For Each otherPath In otherPaths
-                                If otherPath.IsClosed AndAlso ContainsPoint(otherPath, testPoint) Then
-                                    insideCount += 1
+                            For Each other In otherPaths
+                                If other.IsClosed AndAlso ContainsPoint(other, pt) Then
+                                    votes += 1
                                     Exit For
                                 End If
                             Next
                         Next
-
-                        ' Segment is considered inside if majority of test points are inside
-                        segment.IsInside = (insideCount > testPoints / 2)
-
-                        ' Set keep flag based on containment and operation
-                        segment.Keep = If(keepInsideSegments, segment.IsInside, Not segment.IsInside)
+                        seg.IsInside = (votes >= 2)          'majority
+                        seg.Keep = If(keepInsideSegments, seg.IsInside, Not seg.IsInside)
                     Next
                 Next
+            End Sub
+
+            'Overload that keeps the old signature (calls the new one with Nothing = no rotation)
+            Private Sub MarkPathSegmentsImproved(pathsToMark As List(Of BezierPath),
+                                     otherPaths As List(Of BezierPath),
+                                     keepInsideSegments As Boolean)
+                'fallback for any legacy caller – no rotation applied
+                MarkPathSegmentsImproved(pathsToMark, otherPaths, keepInsideSegments, Nothing)
             End Sub
 
             ''' <summary>
