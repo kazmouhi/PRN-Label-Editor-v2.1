@@ -3232,7 +3232,7 @@ Namespace Draw
                 Next
                 result.Add(New PathCommands(first, Nothing, Nothing, "Z"c))
             Next
-
+            result = RebuildSmoothCurves(result)
             Return result
         End Function
 
@@ -3835,6 +3835,45 @@ Namespace Draw
 #End Region
 
 #Region "Helper Methods"
+        Private Function RebuildSmoothCurves(ByVal path As List(Of PathCommands),
+                                     Optional tolerance As Double = 0.98) As List(Of PathCommands)
+            Dim result As New List(Of PathCommands)
+            If path Is Nothing OrElse path.Count < 3 Then Return path
+
+            result.Add(path(0))
+            Dim i As Integer = 1
+            While i < path.Count - 2
+                Dim p0 = path(i - 1).P
+                Dim p1 = path(i).P
+                Dim p2 = path(i + 1).P
+
+                ' compute normalized direction vectors
+                Dim v1x = p1.X - p0.X : Dim v1y = p1.Y - p0.Y
+                Dim v2x = p2.X - p1.X : Dim v2y = p2.Y - p1.Y
+                Dim m1 = Math.Sqrt(v1x * v1x + v1y * v1y)
+                Dim m2 = Math.Sqrt(v2x * v2x + v2y * v2y)
+                If m1 = 0 OrElse m2 = 0 Then
+                    i += 1
+                    Continue While
+                End If
+                Dim dot = (v1x * v2x + v1y * v2y) / (m1 * m2)
+
+                ' if nearly colinear, treat as curve continuation
+                If dot > tolerance Then
+                    ' combine into single smooth cubic (approx)
+                    Dim b1 As New PointF(p0.X + v1x / 3.0F, p0.Y + v1y / 3.0F)
+                    Dim b2 As New PointF(p2.X - v2x / 3.0F, p2.Y - v2y / 3.0F)
+                    result.Add(New PathCommands(p2, b1, b2, "C"c))
+                    i += 2
+                Else
+                    result.Add(path(i))
+                    i += 1
+                End If
+            End While
+
+            result.Add(path.Last())
+            Return result
+        End Function
 
 
         Private Function TryFindCircle(p1 As PointF, p2 As PointF, p3 As PointF, ByRef center As PointF, ByRef radius As Double) As Boolean
