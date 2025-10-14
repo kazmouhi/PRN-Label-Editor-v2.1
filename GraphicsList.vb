@@ -3115,6 +3115,7 @@ Namespace Draw
                     rotationMatrix.RotateAt(obj.CurrentAngle, obj.origin)
                 End If
 
+                ' Build the shape path with rotation
                 For Each cmd As PathCommands In obj.PathCommands
                     Dim p As PointF = cmd.P
                     Dim b1 As PointF = cmd.b1
@@ -3141,20 +3142,22 @@ Namespace Draw
                             gp.StartFigure()
                             prevPoint = p
                             started = True
+
                         Case "L"c
                             If started Then gp.AddLine(prevPoint, p)
                             prevPoint = p
+
                         Case "C"c
                             If started Then gp.AddBezier(prevPoint, b1, b2, p)
                             prevPoint = p
+
                         Case "Z"c
                             gp.CloseFigure()
                             started = False
                     End Select
                 Next
 
-                gp.Flatten()
-
+                ' Convert GraphicsPath to integer Clipper coordinates
                 Dim pathPoints() As PointF = gp.PathPoints
                 Dim types() As Byte = gp.PathTypes
                 Dim subPath As New List(Of IntPoint)
@@ -3162,11 +3165,13 @@ Namespace Draw
                 For i As Integer = 0 To pathPoints.Length - 1
                     Dim x As Double = pathPoints(i).X * scale
                     Dim y As Double = pathPoints(i).Y * scale
+
                     If Double.IsNaN(x) OrElse Double.IsNaN(y) OrElse
                Double.IsInfinity(x) OrElse Double.IsInfinity(y) OrElse
                Math.Abs(x) > maxRange OrElse Math.Abs(y) > maxRange Then Continue For
 
                     subPath.Add(New IntPoint(CLng(x), CLng(y)))
+
                     If (types(i) And &H80) <> 0 Then
                         If subPath.Count > 2 Then
                             Try
@@ -3177,6 +3182,7 @@ Namespace Draw
                         subPath = New List(Of IntPoint)
                     End If
                 Next
+
                 If subPath.Count > 2 Then
                     Try
                         clipper.AddPath(subPath, PolyType.ptSubject, True)
@@ -3189,50 +3195,24 @@ Namespace Draw
             Dim solution As New List(Of List(Of IntPoint))()
             clipper.Execute(ClipType.ctDifference, solution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
 
-            ' --- Convert result back into PathCommands with curve reconstruction ---
+            ' --- Convert back into PathCommands ---
             For Each poly In solution
-                If poly.Count < 3 Then Continue For
+                If poly.Count = 0 Then Continue For
 
                 Dim first As New PointF(CSng(poly(0).X / scale), CSng(poly(0).Y / scale))
                 result.Add(New PathCommands(first, Nothing, Nothing, "M"c))
 
-                Dim pts As New List(Of PointF)
-                For Each p In poly
-                    pts.Add(New PointF(CSng(p.X / scale), CSng(p.Y / scale)))
+                For i As Integer = 1 To poly.Count - 1
+                    Dim pt As New PointF(CSng(poly(i).X / scale), CSng(poly(i).Y / scale))
+                    result.Add(New PathCommands(pt, Nothing, Nothing, "L"c))
                 Next
-                pts.Add(pts(0)) ' close loop
-
-                Dim tolerance As Double = 0.15
-                Dim i As Integer = 1
-                While i < pts.Count - 1
-                    Dim p0 = pts(i - 1)
-                    Dim p1 = pts(i)
-                    Dim p2 = pts(i + 1)
-
-                    Dim center As PointF
-                    Dim radius As Double
-                    If TryFindCircle(p0, p1, p2, center, radius) AndAlso radius > 0 Then
-                        Dim angle1 = Math.Atan2(p0.Y - center.Y, p0.X - center.X)
-                        Dim angle2 = Math.Atan2(p1.Y - center.Y, p1.X - center.X)
-                        Dim angle3 = Math.Atan2(p2.Y - center.Y, p2.X - center.X)
-                        Dim step1 = Math.Abs(angle2 - angle1)
-                        Dim step2 = Math.Abs(angle3 - angle2)
-                        If Math.Abs(step1 - step2) < tolerance Then
-                            result.Add(New PathCommands(p1, Nothing, Nothing, "A"c))
-                            i += 1
-                            Continue While
-                        End If
-                    End If
-
-                    result.Add(New PathCommands(p1, Nothing, Nothing, "L"c))
-                    i += 1
-                End While
 
                 result.Add(New PathCommands(first, Nothing, Nothing, "Z"c))
             Next
 
             Return result
         End Function
+
 
 
         Public Function MergePathsIntersect(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
