@@ -3062,40 +3062,6 @@ Namespace Draw
             Return result
         End Function
 
-
-        ''' <summary>
-        ''' Gets the path commands after applying rotation transformation
-        ''' </summary>
-        Private Function GetRotatedPathCommands(drawObj As DrawObject) As List(Of PathCommands)
-            If drawObj.CurrentAngle = 0 Then Return drawObj.PathCommands
-
-            ' Create a rotation matrix
-            Dim rotationMatrix As New Matrix()
-            rotationMatrix.RotateAt(drawObj.CurrentAngle, drawObj.origin)
-
-            ' Transform all points in the path commands
-            Dim rotatedCommands As New List(Of PathCommands)()
-
-            For Each cmd As PathCommands In drawObj.PathCommands
-                Dim rotatedPoint As PointF = TransformPoint(cmd.P, rotationMatrix)
-                Dim rotatedB1 As PointF = If(cmd.b1 <> Nothing, TransformPoint(cmd.b1, rotationMatrix), Nothing)
-                Dim rotatedB2 As PointF = If(cmd.b2 <> Nothing, TransformPoint(cmd.b2, rotationMatrix), Nothing)
-
-                rotatedCommands.Add(New PathCommands(rotatedPoint, rotatedB1, rotatedB2, cmd.Pc))
-            Next
-
-            Return rotatedCommands
-        End Function
-
-        ''' <summary>
-        ''' Transforms a point using a matrix
-        ''' </summary>
-        Private Function TransformPoint(point As PointF, matrix As Matrix) As PointF
-            Dim points() As PointF = {point}
-            matrix.TransformPoints(points)
-            Return points(0)
-        End Function
-
         Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
             Dim result As New List(Of PathCommands)
             If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then Return result
@@ -3104,44 +3070,22 @@ Namespace Draw
             Dim maxRange As Double = 9.0E+18 / scale
             Dim clipper As New Clipper()
 
-            ' helper: evaluate cubic bezier at t
-            Dim GetBezierPoint As Func(Of PointF, PointF, PointF, PointF, Double, PointF) =
-        Function(p0, p1, p2, p3, t)
-            Dim u = 1.0 - t
-            Dim tt = t * t
-            Dim uu = u * u
-            Dim uuu = uu * u
-            Dim ttt = tt * t
-            Dim x = CSng(uuu * p0.X + 3 * uu * t * p1.X + 3 * u * tt * p2.X + ttt * p3.X)
-            Dim y = CSng(uuu * p0.Y + 3 * uu * t * p1.Y + 3 * u * tt * p2.Y + ttt * p3.Y)
-            Return New PointF(x, y)
-        End Function
-
-            ' For each object, build a set of subpaths (honouring 'M') and sample curves adaptively
+            ' --- Build all rotated shapes just like MergePathsUnion ---
             For Each obj In drawObjects
+                Dim gp As New GraphicsPath()
                 Dim prevPoint As PointF = Nothing
                 Dim started As Boolean = False
 
                 Dim rotationMatrix As New Matrix()
-                If obj.CurrentAngle <> 0 Then rotationMatrix.RotateAt(obj.CurrentAngle, obj.origin)
-
-                Dim currentSubPath As New List(Of IntPoint)
-                Dim AddCurrentSubPathToClipper = Sub()
-                                                     If currentSubPath IsNot Nothing AndAlso currentSubPath.Count > 2 Then
-                                                         Try
-                                                             clipper.AddPath(currentSubPath, PolyType.ptSubject, True)
-                                                         Catch
-                                                         End Try
-                                                     End If
-                                                     currentSubPath = New List(Of IntPoint)()
-                                                 End Sub
+                If obj.CurrentAngle <> 0 Then
+                    rotationMatrix.RotateAt(obj.CurrentAngle, obj.origin)
+                End If
 
                 For Each cmd As PathCommands In obj.PathCommands
                     Dim p As PointF = cmd.P
                     Dim b1 As PointF = cmd.b1
                     Dim b2 As PointF = cmd.b2
 
-                    ' apply rotation if needed
                     If obj.CurrentAngle <> 0 Then
                         Dim arr() As PointF = {p}
                         rotationMatrix.TransformPoints(arr)
@@ -3160,84 +3104,76 @@ Namespace Draw
 
                     Select Case cmd.Pc
                         Case "M"c
-                            ' start a fresh subpath — preserve move semantics
-                            AddCurrentSubPathToClipper()
+                            gp.StartFigure()
                             prevPoint = p
                             started = True
-                            ' add the move point as the first point of the subpath
-                            Dim xi As Long = CLng(prevPoint.X * scale)
-                            Dim yi As Long = CLng(prevPoint.Y * scale)
-                            If Not (Double.IsNaN(prevPoint.X) Or Double.IsNaN(prevPoint.Y)) Then
-                                currentSubPath.Add(New IntPoint(xi, yi))
-                            End If
-
                         Case "L"c
-                            If started Then
-                                ' add endpoint
-                                Dim xi As Long = CLng(p.X * scale)
-                                Dim yi As Long = CLng(p.Y * scale)
-                                If Not (Double.IsNaN(xi) Or Double.IsNaN(yi)) Then currentSubPath.Add(New IntPoint(xi, yi))
-                            End If
+                            If started Then gp.AddLine(prevPoint, p)
                             prevPoint = p
-
                         Case "C"c
-                            If started Then
-                                ' adaptive sampling for the bezier segment: sample based on chord length
-                                Dim chordLen As Double = Math.Sqrt((p.X - prevPoint.X) ^ 2 + (p.Y - prevPoint.Y) ^ 2)
-                                Dim ctrlLen As Double = Math.Sqrt((b1.X - prevPoint.X) ^ 2 + (b1.Y - prevPoint.Y) ^ 2) + Math.Sqrt((b2.X - p.X) ^ 2 + (b2.Y - p.Y) ^ 2)
-                                ' heuristic sample count: proportional to curvature & length (min 8, max 128)
-                                Dim sampleCount As Integer = CInt(Math.Min(128, Math.Max(8, Math.Ceiling((chordLen + ctrlLen) * 0.5))))
-                                For s As Integer = 1 To sampleCount
-                                    Dim t As Double = s / sampleCount
-                                    Dim ptSample As PointF = GetBezierPoint(prevPoint, b1, b2, p, t)
-                                    Dim xi As Long = CLng(ptSample.X * scale)
-                                    Dim yi As Long = CLng(ptSample.Y * scale)
-                                    If Math.Abs(xi) <= CLng(maxRange) And Math.Abs(yi) <= CLng(maxRange) Then
-                                        currentSubPath.Add(New IntPoint(xi, yi))
-                                    End If
-                                Next
-                            End If
+                            If started Then gp.AddBezier(prevPoint, b1, b2, p)
                             prevPoint = p
-
                         Case "Z"c
-                            ' close subpath
-                            If started Then
-                                ' ensure closure by repeating first point if needed
-                                If currentSubPath.Count > 0 Then
-                                    Dim firstPt = currentSubPath(0)
-                                    currentSubPath.Add(firstPt)
-                                End If
-                                AddCurrentSubPathToClipper()
-                                started = False
-                            End If
+                            gp.CloseFigure()
+                            started = False
                     End Select
                 Next
 
-                ' finish last subpath
-                AddCurrentSubPathToClipper()
+                ' ✅ Do NOT flatten — keep curves intact
+                Dim pathPoints() As PointF = gp.PathPoints
+                Dim types() As Byte = gp.PathTypes
+                Dim subPath As New List(Of IntPoint)()
+
+                For i As Integer = 0 To pathPoints.Length - 1
+                    Dim x As Double = pathPoints(i).X * scale
+                    Dim y As Double = pathPoints(i).Y * scale
+
+                    If Double.IsNaN(x) OrElse Double.IsNaN(y) OrElse
+               Double.IsInfinity(x) OrElse Double.IsInfinity(y) OrElse
+               Math.Abs(x) > maxRange OrElse Math.Abs(y) > maxRange Then Continue For
+
+                    subPath.Add(New IntPoint(CLng(x), CLng(y)))
+
+                    If (types(i) And &H80) <> 0 Then
+                        If subPath.Count > 2 Then
+                            Try
+                                clipper.AddPath(subPath, PolyType.ptSubject, True)
+                            Catch
+                            End Try
+                        End If
+                        subPath = New List(Of IntPoint)()
+                    End If
+                Next
+
+                If subPath.Count > 2 Then
+                    Try
+                        clipper.AddPath(subPath, PolyType.ptSubject, True)
+                    Catch
+                    End Try
+                End If
             Next
 
-            ' perform difference (punch-out)
+            ' --- Only difference from MergePathsUnion ---
             Dim solution As New List(Of List(Of IntPoint))()
             clipper.Execute(ClipType.ctDifference, solution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
 
-            ' convert solution back to PathCommands (we output L commands - dense so visually smooth)
+            ' --- Convert back using Bézier-aware commands ---
             For Each poly In solution
-                If poly.Count < 3 Then Continue For
+                If poly.Count = 0 Then Continue For
+
                 Dim first As New PointF(CSng(poly(0).X / scale), CSng(poly(0).Y / scale))
                 result.Add(New PathCommands(first, Nothing, Nothing, "M"c))
+
                 For i As Integer = 1 To poly.Count - 1
                     Dim pt As New PointF(CSng(poly(i).X / scale), CSng(poly(i).Y / scale))
                     result.Add(New PathCommands(pt, Nothing, Nothing, "L"c))
                 Next
+
                 result.Add(New PathCommands(first, Nothing, Nothing, "Z"c))
             Next
-            result = RebuildSmoothCurves(result)
+
             Return result
         End Function
-
-
-
 
         Public Function MergePathsIntersect(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
             Dim result As New List(Of PathCommands)
@@ -3835,47 +3771,40 @@ Namespace Draw
 #End Region
 
 #Region "Helper Methods"
-        Private Function RebuildSmoothCurves(ByVal path As List(Of PathCommands),
-                                     Optional tolerance As Double = 0.98) As List(Of PathCommands)
-            Dim result As New List(Of PathCommands)
-            If path Is Nothing OrElse path.Count < 3 Then Return path
 
-            result.Add(path(0))
-            Dim i As Integer = 1
-            While i < path.Count - 2
-                Dim p0 = path(i - 1).P
-                Dim p1 = path(i).P
-                Dim p2 = path(i + 1).P
 
-                ' compute normalized direction vectors
-                Dim v1x = p1.X - p0.X : Dim v1y = p1.Y - p0.Y
-                Dim v2x = p2.X - p1.X : Dim v2y = p2.Y - p1.Y
-                Dim m1 = Math.Sqrt(v1x * v1x + v1y * v1y)
-                Dim m2 = Math.Sqrt(v2x * v2x + v2y * v2y)
-                If m1 = 0 OrElse m2 = 0 Then
-                    i += 1
-                    Continue While
-                End If
-                Dim dot = (v1x * v2x + v1y * v2y) / (m1 * m2)
+        ''' <summary>
+        ''' Gets the path commands after applying rotation transformation
+        ''' </summary>
+        Private Function GetRotatedPathCommands(drawObj As DrawObject) As List(Of PathCommands)
+            If drawObj.CurrentAngle = 0 Then Return drawObj.PathCommands
 
-                ' if nearly colinear, treat as curve continuation
-                If dot > tolerance Then
-                    ' combine into single smooth cubic (approx)
-                    Dim b1 As New PointF(p0.X + v1x / 3.0F, p0.Y + v1y / 3.0F)
-                    Dim b2 As New PointF(p2.X - v2x / 3.0F, p2.Y - v2y / 3.0F)
-                    result.Add(New PathCommands(p2, b1, b2, "C"c))
-                    i += 2
-                Else
-                    result.Add(path(i))
-                    i += 1
-                End If
-            End While
+            ' Create a rotation matrix
+            Dim rotationMatrix As New Matrix()
+            rotationMatrix.RotateAt(drawObj.CurrentAngle, drawObj.origin)
 
-            result.Add(path.Last())
-            Return result
+            ' Transform all points in the path commands
+            Dim rotatedCommands As New List(Of PathCommands)()
+
+            For Each cmd As PathCommands In drawObj.PathCommands
+                Dim rotatedPoint As PointF = TransformPoint(cmd.P, rotationMatrix)
+                Dim rotatedB1 As PointF = If(cmd.b1 <> Nothing, TransformPoint(cmd.b1, rotationMatrix), Nothing)
+                Dim rotatedB2 As PointF = If(cmd.b2 <> Nothing, TransformPoint(cmd.b2, rotationMatrix), Nothing)
+
+                rotatedCommands.Add(New PathCommands(rotatedPoint, rotatedB1, rotatedB2, cmd.Pc))
+            Next
+
+            Return rotatedCommands
         End Function
 
-
+        ''' <summary>
+        ''' Transforms a point using a matrix
+        ''' </summary>
+        Private Function TransformPoint(point As PointF, matrix As Matrix) As PointF
+            Dim points() As PointF = {point}
+            matrix.TransformPoints(points)
+            Return points(0)
+        End Function
         Private Function TryFindCircle(p1 As PointF, p2 As PointF, p3 As PointF, ByRef center As PointF, ByRef radius As Double) As Boolean
             Dim A As Double = p2.X - p1.X
             Dim B As Double = p2.Y - p1.Y
