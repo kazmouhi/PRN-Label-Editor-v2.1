@@ -3008,30 +3008,24 @@ Namespace Draw
         End Function
 
         ''' <summary>
-        ''' Improved PunchOut that handles curves more accurately
-        ''' Fixed PunchOut that preserves path ordering and prevents vertex corruption
+        ''' PunchOut that produces ONE single continuous outer boundary path
         ''' </summary>
-
         Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
             Dim result As New List(Of PathCommands)
             If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then Return result
             If drawObjects.Count = 1 Then Return GetRotatedPathCommands(drawObjects(0))
 
-            ' CRITICAL: Process each shape individually first, THEN union
-            ' This prevents Clipper from mixing up vertex ordering
-
-            Dim scale As Double = 100.0 ' Increased scale for better precision
+            Dim scale As Double = 100.0
             Dim maxRange As Double = 9.0E+18 / scale
 
-            ' Convert all objects to integer polygons individually
             Dim allPolygons As New List(Of List(Of IntPoint))()
 
+            ' Convert all objects to polygons
             For Each obj In drawObjects
                 Dim gp As New GraphicsPath()
                 Dim prevPoint As PointF = Nothing
                 Dim started As Boolean = False
 
-                ' Apply rotation transformation
                 Dim rotationMatrix As New Matrix()
                 If obj.CurrentAngle <> 0 Then
                     rotationMatrix.RotateAt(obj.CurrentAngle, obj.origin)
@@ -3077,7 +3071,6 @@ Namespace Draw
                     End Select
                 Next
 
-                ' Use VERY HIGH precision flattening for curves
                 gp.Flatten(New Matrix(), 0.001F)
 
                 Dim pathPoints() As PointF = gp.PathPoints
@@ -3094,12 +3087,9 @@ Namespace Draw
                         Continue For
                     End If
 
-                    ' Round to nearest integer to avoid precision issues
                     subPath.Add(New IntPoint(CLng(Math.Round(x)), CLng(Math.Round(y))))
 
-                    ' End of figure marker
                     If (types(i) And &H80) <> 0 Then
-                        ' Remove duplicate consecutive points
                         subPath = RemoveDuplicatePoints(subPath)
 
                         If subPath.Count > 2 Then
@@ -3115,52 +3105,65 @@ Namespace Draw
                 End If
             Next
 
-            ' Now perform union with proper handling
             If allPolygons.Count = 0 Then Return result
 
-            ' Create a single clipper instance for the union
-            Dim clipper As New Clipper()
+            ' KEY FIX: Use SimplifyPolygon to get ONE outer boundary
+            ' This merges all separate polygons into their outer boundary
+            Dim simplified As New List(Of List(Of IntPoint))()
 
-            ' Add ALL polygons at once to prevent reordering
             For Each poly In allPolygons
-                If poly.Count > 2 Then
-                    Try
-                        clipper.AddPath(poly, PolyType.ptSubject, True)
-                    Catch ex As Exception
-                        ' Skip invalid polygons
-                    End Try
+                ' Add as subject
+                Dim clipper As New Clipper()
+                clipper.AddPath(poly, PolyType.ptSubject, True)
+
+                Dim solution As New List(Of List(Of IntPoint))()
+
+                ' Use SimplifyPolygon to get clean outer boundary
+                Dim simplifiedPoly = Clipper.SimplifyPolygon(poly, PolyFillType.pftNonZero)
+                If simplifiedPoly IsNot Nothing AndAlso simplifiedPoly.Count > 0 Then
+                    For Each sp In simplifiedPoly
+                        If sp.Count > 2 Then
+                            simplified.Add(sp)
+                        End If
+                    Next
                 End If
             Next
 
-            ' Execute union - this respects the input ordering better
-            Dim solution As New List(Of List(Of IntPoint))()
-            clipper.Execute(ClipType.ctUnion, solution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
+            ' Now merge all simplified polygons using UNION
+            Dim finalClipper As New Clipper()
 
-            ' Convert back to PathCommands, preserving order
-            For Each poly In solution
-                If poly.Count < 2 Then Continue For
+            For Each poly In simplified
+                If poly.Count > 2 Then
+                    finalClipper.AddPath(poly, PolyType.ptSubject, True)
+                End If
+            Next
 
-                ' Start path
-                Dim first As New PointF(CSng(poly(0).X / scale), CSng(poly(0).Y / scale))
-                result.Add(New PathCommands(first, Nothing, Nothing, "M"c))
+            Dim finalSolution As New List(Of List(Of IntPoint))()
+            finalClipper.Execute(ClipType.ctUnion, finalSolution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
 
-                ' Add all points in order
-                Dim lastPoint As PointF = first
-                For i As Integer = 1 To poly.Count - 1
-                    Dim pt As New PointF(CSng(poly(i).X / scale), CSng(poly(i).Y / scale))
+            ' Convert result to single continuous path
+            If finalSolution.Count > 0 Then
+                ' Take the largest polygon (outer boundary)
+                Dim largestPoly = finalSolution.OrderByDescending(Function(p) ComputePolygonArea(p)).First()
 
-                    ' Skip duplicate points
-                    If Math.Abs(pt.X - lastPoint.X) > 0.01 OrElse Math.Abs(pt.Y - lastPoint.Y) > 0.01 Then
-                        result.Add(New PathCommands(pt, Nothing, Nothing, "L"c))
-                        lastPoint = pt
-                    End If
-                Next
+                If largestPoly.Count > 0 Then
+                    Dim first As New PointF(CSng(largestPoly(0).X / scale), CSng(largestPoly(0).Y / scale))
+                    result.Add(New PathCommands(first, Nothing, Nothing, "M"c))
 
-                ' Close path
-                If Math.Abs(lastPoint.X - first.X) > 0.01 OrElse Math.Abs(lastPoint.Y - first.Y) > 0.01 Then
+                    Dim lastPoint As PointF = first
+                    For i As Integer = 1 To largestPoly.Count - 1
+                        Dim pt As New PointF(CSng(largestPoly(i).X / scale), CSng(largestPoly(i).Y / scale))
+
+                        If Math.Abs(pt.X - lastPoint.X) > 0.001 OrElse Math.Abs(pt.Y - lastPoint.Y) > 0.001 Then
+                            result.Add(New PathCommands(pt, Nothing, Nothing, "L"c))
+                            lastPoint = pt
+                        End If
+                    Next
+
+                    ' Close the path
                     result.Add(New PathCommands(first, Nothing, Nothing, "Z"c))
                 End If
-            Next
+            End If
 
             Return result
         End Function
@@ -3175,13 +3178,11 @@ Namespace Draw
             cleaned.Add(points(0))
 
             For i As Integer = 1 To points.Count - 1
-                ' Only add if different from previous point
                 If points(i).X <> points(i - 1).X OrElse points(i).Y <> points(i - 1).Y Then
                     cleaned.Add(points(i))
                 End If
             Next
 
-            ' Remove last point if it's the same as first (Clipper adds it)
             If cleaned.Count > 1 Then
                 If cleaned(cleaned.Count - 1).X = cleaned(0).X AndAlso
            cleaned(cleaned.Count - 1).Y = cleaned(0).Y Then
@@ -3190,6 +3191,23 @@ Namespace Draw
             End If
 
             Return cleaned
+        End Function
+
+        ''' <summary>
+        ''' Computes the area of a polygon using the shoelace formula
+        ''' </summary>
+        Private Function ComputePolygonArea(poly As List(Of IntPoint)) As Double
+            If poly.Count < 3 Then Return 0
+
+            Dim area As Double = 0
+            For i As Integer = 0 To poly.Count - 1
+                Dim p1 = poly(i)
+                Dim p2 = poly((i + 1) Mod poly.Count)
+                area += CLng(p1.X) * CLng(p2.Y)
+                area -= CLng(p2.X) * CLng(p1.Y)
+            Next
+
+            Return Math.Abs(area) / 2.0
         End Function
 
         Public Function MergePathsIntersect(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
