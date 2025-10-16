@@ -3220,6 +3220,10 @@ Namespace Draw
             Return Math.Abs(area) / 2.0
         End Function
 
+        ''' <summary>
+        ''' Intersect that keeps INNER regions (inverse of PunchOut which keeps outer boundary)
+        ''' This finds all overlapping areas between shapes
+        ''' </summary>
         Public Function MergePathsIntersect(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
             Dim result As New List(Of PathCommands)
             If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then Return result
@@ -3284,7 +3288,7 @@ Namespace Draw
                 Next
 
                 ' Flatten the path to convert curves to line segments
-                gp.Flatten()
+                gp.Flatten(New Matrix(), 0.001F)
 
                 Dim pts() As PointF = gp.PathPoints
                 Dim types() As Byte = gp.PathTypes
@@ -3305,13 +3309,20 @@ Namespace Draw
 
                     ' Check if this is the end of a figure
                     If (types(i) And &H80) <> 0 Then
-                        If subPath.Count > 2 Then subPaths.Add(New List(Of IntPoint)(subPath))
+                        If subPath.Count > 2 Then
+                            ' Remove duplicates
+                            subPath = RemoveDuplicatePoints(subPath)
+                            If subPath.Count > 2 Then subPaths.Add(New List(Of IntPoint)(subPath))
+                        End If
                         subPath.Clear()
                     End If
                 Next
 
                 ' Add any remaining path
-                If subPath.Count > 2 Then subPaths.Add(subPath)
+                If subPath.Count > 2 Then
+                    subPath = RemoveDuplicatePoints(subPath)
+                    If subPath.Count > 2 Then subPaths.Add(subPath)
+                End If
 
                 If subPaths.Count > 0 Then objectPolys.Add(subPaths)
             Next
@@ -3319,41 +3330,78 @@ Namespace Draw
             ' If we have less than 2 valid objects, cannot intersect
             If objectPolys.Count < 2 Then Return result
 
-            ' Start intersection with the first object
-            Dim accumulated As List(Of List(Of IntPoint)) = objectPolys(0)
+            ' KEY CHANGE: Use Intersection operation to find ONLY overlapping regions
+            ' This is the inverse of Union which was used in PunchOut
+            Dim clipper As New Clipper()
 
-            ' Intersect successively with each following object
-            For i As Integer = 1 To objectPolys.Count - 1
-                Dim clipper As New Clipper()
-
-                ' Add accumulated result as subject
-                clipper.AddPaths(accumulated, PolyType.ptSubject, True)
-
-                ' Add next object as clip
-                clipper.AddPaths(objectPolys(i), PolyType.ptClip, True)
-
-                Dim solution As New List(Of List(Of IntPoint))()
-
-                ' Execute intersection
-                clipper.Execute(ClipType.ctIntersection, solution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
-
-                ' Update accumulated with intersection result
-                accumulated = solution
-
-                ' Early exit if intersection becomes empty
-                If accumulated.Count = 0 Then Exit For
+            ' Add first object as subject
+            For Each poly In objectPolys(0)
+                If poly.Count > 2 Then
+                    Try
+                        clipper.AddPath(poly, PolyType.ptSubject, True)
+                    Catch ex As Exception
+                        Continue For
+                    End Try
+                End If
             Next
 
-            ' Convert final result to PathCommands
-            For Each poly In accumulated
+            ' Intersect with each following object
+            For i As Integer = 1 To objectPolys.Count - 1
+                Dim tempClipper As New Clipper()
+
+                ' Execute current intersection first
+                Dim tempSolution As New List(Of List(Of IntPoint))()
+                clipper.Execute(ClipType.ctIntersection, tempSolution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
+
+                ' If no intersection found, result is empty
+                If tempSolution.Count = 0 Then Return result
+
+                ' Set up for next intersection
+                clipper.Clear()
+
+                ' Add current intersection result as subject
+                For Each poly In tempSolution
+                    If poly.Count > 2 Then
+                        Try
+                            clipper.AddPath(poly, PolyType.ptSubject, True)
+                        Catch ex As Exception
+                            Continue For
+                        End Try
+                    End If
+                Next
+
+                ' Add next object as clip
+                For Each poly In objectPolys(i)
+                    If poly.Count > 2 Then
+                        Try
+                            clipper.AddPath(poly, PolyType.ptClip, True)
+                        Catch ex As Exception
+                            Continue For
+                        End Try
+                    End If
+                Next
+            Next
+
+            ' Execute final intersection
+            Dim finalSolution As New List(Of List(Of IntPoint))()
+            clipper.Execute(ClipType.ctIntersection, finalSolution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
+
+            ' Convert result to PathCommands - keep ALL resulting polygons (not just the largest)
+            For Each poly In finalSolution
                 If poly.Count = 0 Then Continue For
 
                 Dim first As New PointF(CSng(poly(0).X / scale), CSng(poly(0).Y / scale))
                 result.Add(New PathCommands(first, Nothing, Nothing, "M"c))
 
+                Dim lastPoint As PointF = first
                 For j As Integer = 1 To poly.Count - 1
                     Dim pt As New PointF(CSng(poly(j).X / scale), CSng(poly(j).Y / scale))
-                    result.Add(New PathCommands(pt, Nothing, Nothing, "L"c))
+
+                    ' Only add point if it's not a duplicate
+                    If Math.Abs(pt.X - lastPoint.X) > 0.001 OrElse Math.Abs(pt.Y - lastPoint.Y) > 0.001 Then
+                        result.Add(New PathCommands(pt, Nothing, Nothing, "L"c))
+                        lastPoint = pt
+                    End If
                 Next
 
                 ' Close the path
