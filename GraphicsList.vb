@@ -3015,8 +3015,8 @@ Namespace Draw
             If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then Return result
             If drawObjects.Count = 1 Then Return GetRotatedPathCommands(drawObjects(0))
 
-            Dim scale As Double = 100.0
-            Dim maxRange As Double = 9.0E+18 / scale
+            Dim scale As Double = 10.0  ' Reduced from 100.0 to stay within Clipper limits
+            Dim maxRange As Double = 4600000000.0  ' Clipper's actual limit for 64-bit coords
 
             Dim allPolygons As New List(Of List(Of IntPoint))()
 
@@ -3082,8 +3082,12 @@ Namespace Draw
                     Dim y As Double = pathPoints(i).Y * scale
 
                     If Double.IsNaN(x) OrElse Double.IsNaN(y) OrElse
-               Double.IsInfinity(x) OrElse Double.IsInfinity(y) OrElse
-               Math.Abs(x) > maxRange OrElse Math.Abs(y) > maxRange Then
+               Double.IsInfinity(x) OrElse Double.IsInfinity(y) Then
+                        Continue For
+                    End If
+
+                    ' Clamp to Clipper's safe range
+                    If Math.Abs(x) > maxRange OrElse Math.Abs(y) > maxRange Then
                         Continue For
                     End If
 
@@ -3134,7 +3138,13 @@ Namespace Draw
 
             For Each poly In simplified
                 If poly.Count > 2 Then
-                    finalClipper.AddPath(poly, PolyType.ptSubject, True)
+                    Try
+                        finalClipper.AddPath(poly, PolyType.ptSubject, True)
+                    Catch ex As Exception
+                        MessageBox.Show(ex.Message)
+                        ' Skip polygons that cause range errors
+                        Continue For
+                    End Try
                 End If
             Next
 
