@@ -3330,37 +3330,15 @@ Namespace Draw
             ' If we have less than 2 valid objects, cannot intersect
             If objectPolys.Count < 2 Then Return result
 
-            ' KEY CHANGE: Use Intersection operation to find ONLY overlapping regions
-            ' This is the inverse of Union which was used in PunchOut
-            Dim clipper As New Clipper()
+            ' Start with the first object's polygons as the accumulated result
+            Dim accumulated As List(Of List(Of IntPoint)) = objectPolys(0)
 
-            ' Add first object as subject
-            For Each poly In objectPolys(0)
-                If poly.Count > 2 Then
-                    Try
-                        clipper.AddPath(poly, PolyType.ptSubject, True)
-                    Catch ex As Exception
-                        Continue For
-                    End Try
-                End If
-            Next
-
-            ' Intersect with each following object
+            ' Intersect successively with each following object
             For i As Integer = 1 To objectPolys.Count - 1
-                Dim tempClipper As New Clipper()
+                Dim clipper As New Clipper()
 
-                ' Execute current intersection first
-                Dim tempSolution As New List(Of List(Of IntPoint))()
-                clipper.Execute(ClipType.ctIntersection, tempSolution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
-
-                ' If no intersection found, result is empty
-                If tempSolution.Count = 0 Then Return result
-
-                ' Set up for next intersection
-                clipper.Clear()
-
-                ' Add current intersection result as subject
-                For Each poly In tempSolution
+                ' Add accumulated result as subject
+                For Each poly In accumulated
                     If poly.Count > 2 Then
                         Try
                             clipper.AddPath(poly, PolyType.ptSubject, True)
@@ -3370,7 +3348,7 @@ Namespace Draw
                     End If
                 Next
 
-                ' Add next object as clip
+                ' Add next object's polygons as clip
                 For Each poly In objectPolys(i)
                     If poly.Count > 2 Then
                         Try
@@ -3380,11 +3358,20 @@ Namespace Draw
                         End Try
                     End If
                 Next
+
+                ' Execute intersection
+                Dim tempSolution As New List(Of List(Of IntPoint))()
+                clipper.Execute(ClipType.ctIntersection, tempSolution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
+
+                ' Update accumulated with intersection result
+                accumulated = tempSolution
+
+                ' Early exit if intersection becomes empty
+                If accumulated.Count = 0 Then Return result
             Next
 
-            ' Execute final intersection
-            Dim finalSolution As New List(Of List(Of IntPoint))()
-            clipper.Execute(ClipType.ctIntersection, finalSolution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
+            ' Use the final accumulated result
+            Dim finalSolution As List(Of List(Of IntPoint)) = accumulated
 
             ' Convert result to PathCommands - keep ALL resulting polygons (not just the largest)
             For Each poly In finalSolution
