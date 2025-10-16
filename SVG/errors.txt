@@ -5,8 +5,7 @@ just-in-time (JIT) debugging instead of this dialog box.
 ClipperLib.ClipperException: Coordinate outside allowed range
    at ClipperLib.ClipperBase.RangeTest(IntPoint Pt, Boolean& useFullRange)
    at ClipperLib.ClipperBase.AddPath(List`1 pg, PolyType polyType, Boolean Closed)
-   at ClipperLib.ClipperBase.AddPaths(List`1 ppg, PolyType polyType, Boolean closed)
-   at C3DGList.Draw.GraphicsList.MergePathsUnion(List`1 drawObjects)
+   at C3DGList.Draw.GraphicsList.MergePathsPunchOut(List`1 drawObjects)
    at C3DGList.Draw.GraphicsList.MergeSelected(Int32 MergeType)
    at SSVecDraw.frmMain.YsiRVQRvtW(Object  , EventArgs  )
    at System.Windows.Forms.Control.OnClick(EventArgs e)
