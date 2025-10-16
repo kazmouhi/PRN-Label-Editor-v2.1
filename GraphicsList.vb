@@ -3008,75 +3008,17 @@ Namespace Draw
         End Function
 
         ''' <summary>
-        ''' Improved PunchOut that handles curve-to-line intersections accurately
+        ''' Improved PunchOut that handles curves more accurately
         ''' </summary>
         Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
             Dim result As New List(Of PathCommands)
             If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then Return result
 
-            ' Convert to BezierPaths BEFORE flattening to preserve curve information
-            Dim bezierPaths As New List(Of List(Of BezierPath))()
-
-            For Each obj In drawObjects
-                Dim bezPaths = ConvertToBezierPaths(obj.PathCommands)
-                bezierPaths.Add(bezPaths)
-            Next
-
-            ' Find ALL intersections between curves and line segments
-            Dim allIntersections As New List(Of PathIntersection)()
-
-            ' First object is the base (subject)
-            ' All others are tools (clip)
-            For i As Integer = 1 To bezierPaths.Count - 1
-                Dim baseIntersections = FindAllPathIntersections(bezierPaths(0), bezierPaths(i))
-                allIntersections.AddRange(baseIntersections)
-            Next
-
-            ' Clean up near-duplicate intersections
-            allIntersections = CleanupIntersections(allIntersections)
-
-            ' Split all paths at intersection points to get precise segments
-            Dim baseSplit = SplitPathAtIntersections(bezierPaths(0), allIntersections, True)
-
-            ' Mark which segments are inside the cutting objects
-            For i As Integer = 1 To bezierPaths.Count - 1
-                Dim clipSplit = SplitPathAtIntersections(bezierPaths(i), allIntersections, False)
-                MarkPathSegmentsImproved(baseSplit, clipSplit, False)  ' Keep OUTSIDE
-            Next
-
-            ' Collect segments to keep (those marked as outside)
-            Dim keepSegments As New List(Of BezierSegment)()
-            For Each path In baseSplit
-                For Each seg In path.Segments
-                    If seg.Keep Then
-                        keepSegments.Add(seg.Clone())
-                    End If
-                Next
-            Next
-
-            ' Reconstruct continuous paths
-            Dim resultPaths = ReconstructPathsImproved(keepSegments, allIntersections)
-
-            ' Convert back to PathCommands (preserves Bézier curves)
-            result = ConvertToPathCommandsImproved(resultPaths)
-
-            Return result
-        End Function
-
-        ''' <summary>
-        ''' Alternative: Use Clipper but with higher subdivision for better accuracy
-        ''' </summary>
-        Public Function MergePathsPunchOutWithHigherPrecision(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
-            Dim result As New List(Of PathCommands)
-            If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then Return result
-
-            Dim scale As Double = 100.0  ' Increased scale for better precision
+            Dim scale As Double = 10.0
             Dim maxRange As Double = 9.0E+18 / scale
-
             Dim clipper As New Clipper()
 
-            For objIdx As Integer = 0 To drawObjects.Count - 1
-                Dim obj = drawObjects(objIdx)
+            For Each obj In drawObjects
                 Dim gp As New GraphicsPath()
                 Dim prevPoint As PointF = Nothing
                 Dim started As Boolean = False
@@ -3127,9 +3069,10 @@ Namespace Draw
                     End Select
                 Next
 
-                ' CRITICAL: Use subdivisions instead of flatten for curves
-                ' This keeps more curve detail than flatten() but converts to lines with higher density
-                gp.Flatten()  ' Default flatten with reasonable subdivision  ' Smaller tolerance = more subdivisions = better accuracy
+                ' IMPROVED: Use higher precision flattening
+                ' Smaller flatness value = more accurate curve representation
+                Dim flatnessTolerance As Single = 0.01F ' Was effectively using default ~0.25
+                gp.Flatten(New Matrix(), flatnessTolerance)
 
                 Dim pathPoints() As PointF = gp.PathPoints
                 Dim types() As Byte = gp.PathTypes
@@ -3150,11 +3093,7 @@ Namespace Draw
                     If (types(i) And &H80) <> 0 Then
                         If subPath.Count > 2 Then
                             Try
-                                If objIdx = 0 Then
-                                    clipper.AddPath(subPath, PolyType.ptSubject, True)
-                                Else
-                                    clipper.AddPath(subPath, PolyType.ptClip, True)
-                                End If
+                                clipper.AddPath(subPath, PolyType.ptSubject, True)
                             Catch ex As Exception
                             End Try
                         End If
@@ -3164,21 +3103,17 @@ Namespace Draw
 
                 If subPath.Count > 2 Then
                     Try
-                        If objIdx = 0 Then
-                            clipper.AddPath(subPath, PolyType.ptSubject, True)
-                        Else
-                            clipper.AddPath(subPath, PolyType.ptClip, True)
-                        End If
+                        clipper.AddPath(subPath, PolyType.ptSubject, True)
                     Catch ex As Exception
                     End Try
                 End If
             Next
 
-            ' PunchOut: Subject minus all Clips
+            ' Union finale
             Dim solution As New List(Of List(Of IntPoint))()
-            clipper.Execute(ClipType.ctDifference, solution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
+            clipper.Execute(ClipType.ctUnion, solution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
 
-            ' Convert result back to PathCommands
+            ' Conversion vers PathCommands (stays as lines since flattened)
             For Each poly In solution
                 If poly.Count = 0 Then Continue For
 
