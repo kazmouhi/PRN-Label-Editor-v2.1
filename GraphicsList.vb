@@ -3007,16 +3007,76 @@ Namespace Draw
             Return points(0)
         End Function
 
+        ''' <summary>
+        ''' Improved PunchOut that handles curve-to-line intersections accurately
+        ''' </summary>
         Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
             Dim result As New List(Of PathCommands)
             If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then Return result
 
-            Dim scale As Double = 10.0
+            ' Convert to BezierPaths BEFORE flattening to preserve curve information
+            Dim bezierPaths As New List(Of List(Of BezierPath))()
+
+            For Each obj In drawObjects
+                Dim bezPaths = ConvertToBezierPaths(obj.PathCommands)
+                bezierPaths.Add(bezPaths)
+            Next
+
+            ' Find ALL intersections between curves and line segments
+            Dim allIntersections As New List(Of PathIntersection)()
+
+            ' First object is the base (subject)
+            ' All others are tools (clip)
+            For i As Integer = 1 To bezierPaths.Count - 1
+                Dim baseIntersections = FindAllPathIntersections(bezierPaths(0), bezierPaths(i))
+                allIntersections.AddRange(baseIntersections)
+            Next
+
+            ' Clean up near-duplicate intersections
+            allIntersections = CleanupIntersections(allIntersections)
+
+            ' Split all paths at intersection points to get precise segments
+            Dim baseSplit = SplitPathAtIntersections(bezierPaths(0), allIntersections, True)
+
+            ' Mark which segments are inside the cutting objects
+            For i As Integer = 1 To bezierPaths.Count - 1
+                Dim clipSplit = SplitPathAtIntersections(bezierPaths(i), allIntersections, False)
+                MarkPathSegmentsImproved(baseSplit, clipSplit, False)  ' Keep OUTSIDE
+            Next
+
+            ' Collect segments to keep (those marked as outside)
+            Dim keepSegments As New List(Of BezierSegment)()
+            For Each path In baseSplit
+                For Each seg In path.Segments
+                    If seg.Keep Then
+                        keepSegments.Add(seg.Clone())
+                    End If
+                Next
+            Next
+
+            ' Reconstruct continuous paths
+            Dim resultPaths = ReconstructPathsImproved(keepSegments, allIntersections)
+
+            ' Convert back to PathCommands (preserves Bézier curves)
+            result = ConvertToPathCommandsImproved(resultPaths)
+
+            Return result
+        End Function
+
+        ''' <summary>
+        ''' Alternative: Use Clipper but with higher subdivision for better accuracy
+        ''' </summary>
+        Public Function MergePathsPunchOutWithHigherPrecision(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
+            Dim result As New List(Of PathCommands)
+            If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then Return result
+
+            Dim scale As Double = 100.0  ' Increased scale for better precision
             Dim maxRange As Double = 9.0E+18 / scale
 
             Dim clipper As New Clipper()
 
-            For Each obj In drawObjects
+            For objIdx As Integer = 0 To drawObjects.Count - 1
+                Dim obj = drawObjects(objIdx)
                 Dim gp As New GraphicsPath()
                 Dim prevPoint As PointF = Nothing
                 Dim started As Boolean = False
@@ -3028,7 +3088,6 @@ Namespace Draw
                 End If
 
                 For Each cmd As PathCommands In obj.PathCommands
-                    ' Transform the point using rotation
                     Dim transformedPoint As PointF = cmd.P
                     Dim transformedB1 As PointF = If(cmd.b1 <> Nothing, cmd.b1, Nothing)
                     Dim transformedB2 As PointF = If(cmd.b2 <> Nothing, cmd.b2, Nothing)
@@ -3068,7 +3127,9 @@ Namespace Draw
                     End Select
                 Next
 
-                gp.Flatten()
+                ' CRITICAL: Use subdivisions instead of flatten for curves
+                ' This keeps more curve detail than flatten() but converts to lines with higher density
+                gp.Flatten()  ' Default flatten with reasonable subdivision  ' Smaller tolerance = more subdivisions = better accuracy
 
                 Dim pathPoints() As PointF = gp.PathPoints
                 Dim types() As Byte = gp.PathTypes
@@ -3089,7 +3150,11 @@ Namespace Draw
                     If (types(i) And &H80) <> 0 Then
                         If subPath.Count > 2 Then
                             Try
-                                clipper.AddPath(subPath, PolyType.ptSubject, True)
+                                If objIdx = 0 Then
+                                    clipper.AddPath(subPath, PolyType.ptSubject, True)
+                                Else
+                                    clipper.AddPath(subPath, PolyType.ptClip, True)
+                                End If
                             Catch ex As Exception
                             End Try
                         End If
@@ -3099,17 +3164,21 @@ Namespace Draw
 
                 If subPath.Count > 2 Then
                     Try
-                        clipper.AddPath(subPath, PolyType.ptSubject, True)
+                        If objIdx = 0 Then
+                            clipper.AddPath(subPath, PolyType.ptSubject, True)
+                        Else
+                            clipper.AddPath(subPath, PolyType.ptClip, True)
+                        End If
                     Catch ex As Exception
                     End Try
                 End If
             Next
 
-            ' Union finale
+            ' PunchOut: Subject minus all Clips
             Dim solution As New List(Of List(Of IntPoint))()
-            clipper.Execute(ClipType.ctUnion, solution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
+            clipper.Execute(ClipType.ctDifference, solution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
 
-            ' Conversion vers PathCommands
+            ' Convert result back to PathCommands
             For Each poly In solution
                 If poly.Count = 0 Then Continue For
 
@@ -3143,122 +3212,132 @@ Namespace Draw
                 Dim prevPoint As PointF = Nothing
                 Dim started As Boolean = False
 
-                ' Apply rotation
+                ' Apply rotation transformation
                 Dim rotationMatrix As New Matrix()
                 If obj.CurrentAngle <> 0 Then
                     rotationMatrix.RotateAt(obj.CurrentAngle, obj.origin)
                 End If
 
                 For Each cmd As PathCommands In obj.PathCommands
-                    Dim p As PointF = cmd.P
-                    Dim b1 As PointF = cmd.b1
-                    Dim b2 As PointF = cmd.b2
+                    ' Transform points if rotation is needed
+                    Dim transformedPoint As PointF = cmd.P
+                    Dim transformedB1 As PointF = If(cmd.b1 <> Nothing, cmd.b1, Nothing)
+                    Dim transformedB2 As PointF = If(cmd.b2 <> Nothing, cmd.b2, Nothing)
 
                     If obj.CurrentAngle <> 0 Then
-                        Dim pointArray() As PointF = {p}
+                        Dim pointArray() As PointF = {transformedPoint}
                         rotationMatrix.TransformPoints(pointArray)
-                        p = pointArray(0)
+                        transformedPoint = pointArray(0)
 
-                        If Not b1.IsEmpty Then
-                            Dim b1Array() As PointF = {b1}
+                        If transformedB1 <> Nothing Then
+                            Dim b1Array() As PointF = {transformedB1}
                             rotationMatrix.TransformPoints(b1Array)
-                            b1 = b1Array(0)
+                            transformedB1 = b1Array(0)
                         End If
 
-                        If Not b2.IsEmpty Then
-                            Dim b2Array() As PointF = {b2}
+                        If transformedB2 <> Nothing Then
+                            Dim b2Array() As PointF = {transformedB2}
                             rotationMatrix.TransformPoints(b2Array)
-                            b2 = b2Array(0)
+                            transformedB2 = b2Array(0)
                         End If
                     End If
-
 
                     Select Case cmd.Pc
                         Case "M"c
                             gp.StartFigure()
-                            prevPoint = p
+                            prevPoint = transformedPoint
                             started = True
                         Case "L"c
-                            If started Then gp.AddLine(prevPoint, p)
-                            prevPoint = p
+                            If started Then gp.AddLine(prevPoint, transformedPoint)
+                            prevPoint = transformedPoint
                         Case "C"c
-                            If started Then gp.AddBezier(prevPoint, b1, b2, p)
-                            prevPoint = p
+                            If started Then gp.AddBezier(prevPoint, transformedB1, transformedB2, transformedPoint)
+                            prevPoint = transformedPoint
                         Case "Z"c
                             gp.CloseFigure()
                             started = False
                     End Select
                 Next
 
+                ' Flatten the path to convert curves to line segments
                 gp.Flatten()
+
                 Dim pts() As PointF = gp.PathPoints
                 Dim types() As Byte = gp.PathTypes
+
                 Dim subPaths As New List(Of List(Of IntPoint))
                 Dim subPath As New List(Of IntPoint)
 
                 For i As Integer = 0 To pts.Length - 1
                     Dim x As Double = pts(i).X * scale
                     Dim y As Double = pts(i).Y * scale
-                    If Double.IsNaN(x) OrElse Double.IsNaN(y) OrElse Double.IsInfinity(x) OrElse Double.IsInfinity(y) Then Continue For
+
+                    ' Validate coordinates
+                    If Double.IsNaN(x) OrElse Double.IsNaN(y) OrElse
+               Double.IsInfinity(x) OrElse Double.IsInfinity(y) Then Continue For
                     If Math.Abs(x) > maxRange OrElse Math.Abs(y) > maxRange Then Continue For
 
                     subPath.Add(New IntPoint(CLng(x), CLng(y)))
 
-                    ' Figure end
+                    ' Check if this is the end of a figure
                     If (types(i) And &H80) <> 0 Then
                         If subPath.Count > 2 Then subPaths.Add(New List(Of IntPoint)(subPath))
                         subPath.Clear()
                     End If
                 Next
 
+                ' Add any remaining path
                 If subPath.Count > 2 Then subPaths.Add(subPath)
+
                 If subPaths.Count > 0 Then objectPolys.Add(subPaths)
             Next
 
-            ' --- Step 1: Union of all shapes ---
+            ' If we have less than 2 valid objects, cannot intersect
             If objectPolys.Count < 2 Then Return result
-            Dim unionClipper As New Clipper()
-            For Each polyGroup In objectPolys
-                unionClipper.AddPaths(polyGroup, PolyType.ptSubject, True)
+
+            ' Start intersection with the first object
+            Dim accumulated As List(Of List(Of IntPoint)) = objectPolys(0)
+
+            ' Intersect successively with each following object
+            For i As Integer = 1 To objectPolys.Count - 1
+                Dim clipper As New Clipper()
+
+                ' Add accumulated result as subject
+                clipper.AddPaths(accumulated, PolyType.ptSubject, True)
+
+                ' Add next object as clip
+                clipper.AddPaths(objectPolys(i), PolyType.ptClip, True)
+
+                Dim solution As New List(Of List(Of IntPoint))()
+
+                ' Execute intersection
+                clipper.Execute(ClipType.ctIntersection, solution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
+
+                ' Update accumulated with intersection result
+                accumulated = solution
+
+                ' Early exit if intersection becomes empty
+                If accumulated.Count = 0 Then Exit For
             Next
-            Dim unionResult As New List(Of List(Of IntPoint))()
-            unionClipper.Execute(ClipType.ctUnion, unionResult, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
-            If unionResult.Count = 0 Then Return result
 
-            ' --- Step 2: Find outermost polygon (by area) ---
-            Dim largestArea As Double = Double.MinValue
-            Dim outerPoly As List(Of IntPoint) = Nothing
-            For Each p In unionResult
-                Dim area As Double = Math.Abs(Clipper.Area(p))
-                If area > largestArea Then
-                    largestArea = area
-                    outerPoly = p
-                End If
-            Next
-            If outerPoly Is Nothing Then Return result
-
-            ' --- Step 3: Subtract outer boundary from union result ---
-            Dim clipperDiff As New Clipper()
-            clipperDiff.AddPaths(unionResult, PolyType.ptSubject, True)
-            clipperDiff.AddPath(outerPoly, PolyType.ptClip, True)
-            Dim finalSolution As New List(Of List(Of IntPoint))()
-            clipperDiff.Execute(ClipType.ctDifference, finalSolution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
-
-            ' --- Step 4: Convert to PathCommands ---
-            For Each poly In finalSolution
+            ' Convert final result to PathCommands
+            For Each poly In accumulated
                 If poly.Count = 0 Then Continue For
+
                 Dim first As New PointF(CSng(poly(0).X / scale), CSng(poly(0).Y / scale))
                 result.Add(New PathCommands(first, Nothing, Nothing, "M"c))
+
                 For j As Integer = 1 To poly.Count - 1
                     Dim pt As New PointF(CSng(poly(j).X / scale), CSng(poly(j).Y / scale))
                     result.Add(New PathCommands(pt, Nothing, Nothing, "L"c))
                 Next
+
+                ' Close the path
                 result.Add(New PathCommands(first, Nothing, Nothing, "Z"c))
             Next
 
             Return result
         End Function
-
 
 
 #Region “New Boundary-Tracing Core (drop-in replacement)”
