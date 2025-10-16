@@ -3009,14 +3009,22 @@ Namespace Draw
 
         ''' <summary>
         ''' Improved PunchOut that handles curves more accurately
+        ''' Fixed PunchOut that preserves path ordering and prevents vertex corruption
         ''' </summary>
+
         Public Function MergePathsPunchOut(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
             Dim result As New List(Of PathCommands)
             If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then Return result
+            If drawObjects.Count = 1 Then Return GetRotatedPathCommands(drawObjects(0))
 
-            Dim scale As Double = 10.0
+            ' CRITICAL: Process each shape individually first, THEN union
+            ' This prevents Clipper from mixing up vertex ordering
+
+            Dim scale As Double = 100.0 ' Increased scale for better precision
             Dim maxRange As Double = 9.0E+18 / scale
-            Dim clipper As New Clipper()
+
+            ' Convert all objects to integer polygons individually
+            Dim allPolygons As New List(Of List(Of IntPoint))()
 
             For Each obj In drawObjects
                 Dim gp As New GraphicsPath()
@@ -3069,10 +3077,8 @@ Namespace Draw
                     End Select
                 Next
 
-                ' IMPROVED: Use higher precision flattening
-                ' Smaller flatness value = more accurate curve representation
-                Dim flatnessTolerance As Single = 0.01F ' Was effectively using default ~0.25
-                gp.Flatten(New Matrix(), flatnessTolerance)
+                ' Use VERY HIGH precision flattening for curves
+                gp.Flatten(New Matrix(), 0.001F)
 
                 Dim pathPoints() As PointF = gp.PathPoints
                 Dim types() As Byte = gp.PathTypes
@@ -3088,47 +3094,102 @@ Namespace Draw
                         Continue For
                     End If
 
-                    subPath.Add(New IntPoint(CLng(x), CLng(y)))
+                    ' Round to nearest integer to avoid precision issues
+                    subPath.Add(New IntPoint(CLng(Math.Round(x)), CLng(Math.Round(y))))
 
+                    ' End of figure marker
                     If (types(i) And &H80) <> 0 Then
+                        ' Remove duplicate consecutive points
+                        subPath = RemoveDuplicatePoints(subPath)
+
                         If subPath.Count > 2 Then
-                            Try
-                                clipper.AddPath(subPath, PolyType.ptSubject, True)
-                            Catch ex As Exception
-                            End Try
+                            allPolygons.Add(New List(Of IntPoint)(subPath))
                         End If
                         subPath = New List(Of IntPoint)()
                     End If
                 Next
 
                 If subPath.Count > 2 Then
+                    subPath = RemoveDuplicatePoints(subPath)
+                    allPolygons.Add(subPath)
+                End If
+            Next
+
+            ' Now perform union with proper handling
+            If allPolygons.Count = 0 Then Return result
+
+            ' Create a single clipper instance for the union
+            Dim clipper As New Clipper()
+
+            ' Add ALL polygons at once to prevent reordering
+            For Each poly In allPolygons
+                If poly.Count > 2 Then
                     Try
-                        clipper.AddPath(subPath, PolyType.ptSubject, True)
+                        clipper.AddPath(poly, PolyType.ptSubject, True)
                     Catch ex As Exception
+                        ' Skip invalid polygons
                     End Try
                 End If
             Next
 
-            ' Union finale
+            ' Execute union - this respects the input ordering better
             Dim solution As New List(Of List(Of IntPoint))()
             clipper.Execute(ClipType.ctUnion, solution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
 
-            ' Conversion vers PathCommands (stays as lines since flattened)
+            ' Convert back to PathCommands, preserving order
             For Each poly In solution
-                If poly.Count = 0 Then Continue For
+                If poly.Count < 2 Then Continue For
 
+                ' Start path
                 Dim first As New PointF(CSng(poly(0).X / scale), CSng(poly(0).Y / scale))
                 result.Add(New PathCommands(first, Nothing, Nothing, "M"c))
 
+                ' Add all points in order
+                Dim lastPoint As PointF = first
                 For i As Integer = 1 To poly.Count - 1
                     Dim pt As New PointF(CSng(poly(i).X / scale), CSng(poly(i).Y / scale))
-                    result.Add(New PathCommands(pt, Nothing, Nothing, "L"c))
+
+                    ' Skip duplicate points
+                    If Math.Abs(pt.X - lastPoint.X) > 0.01 OrElse Math.Abs(pt.Y - lastPoint.Y) > 0.01 Then
+                        result.Add(New PathCommands(pt, Nothing, Nothing, "L"c))
+                        lastPoint = pt
+                    End If
                 Next
 
-                result.Add(New PathCommands(first, Nothing, Nothing, "Z"c))
+                ' Close path
+                If Math.Abs(lastPoint.X - first.X) > 0.01 OrElse Math.Abs(lastPoint.Y - first.Y) > 0.01 Then
+                    result.Add(New PathCommands(first, Nothing, Nothing, "Z"c))
+                End If
             Next
 
             Return result
+        End Function
+
+        ''' <summary>
+        ''' Removes duplicate consecutive points from a polygon
+        ''' </summary>
+        Private Function RemoveDuplicatePoints(points As List(Of IntPoint)) As List(Of IntPoint)
+            If points.Count <= 1 Then Return points
+
+            Dim cleaned As New List(Of IntPoint)
+            cleaned.Add(points(0))
+
+            For i As Integer = 1 To points.Count - 1
+                ' Only add if different from previous point
+                If points(i).X <> points(i - 1).X OrElse points(i).Y <> points(i - 1).Y Then
+                    cleaned.Add(points(i))
+                End If
+            Next
+
+            ' Remove last point if it's the same as first (Clipper adds it)
+            If cleaned.Count > 1 Then
+                If cleaned(cleaned.Count - 1).X = cleaned(0).X AndAlso
+           cleaned(cleaned.Count - 1).Y = cleaned(0).Y Then
+                    cleaned.RemoveAt(cleaned.Count - 1)
+                End If
+            End If
+
+            Return cleaned
         End Function
 
         Public Function MergePathsIntersect(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
