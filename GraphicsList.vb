@@ -4267,7 +4267,7 @@ Namespace Draw
             Return result
         End Function
         '==========================================================
-        ' ARC SIMPLIFICATION HELPERS
+        ' ARC SIMPLIFICATION HELPERS (SAFE VERSION)
         '==========================================================
         Private Function ConvertLinesToArcs(paths As List(Of PathCommands), Optional tolerance As Double = 0.5) As List(Of PathCommands)
             Dim newPaths As New List(Of PathCommands)
@@ -4277,20 +4277,38 @@ Namespace Draw
                 If cmd.Pc = "L"c Then
                     currentArcPoints.Add(cmd.P)
                 Else
-                    ' Try to fit arcs for consecutive line points
+                    ' Try arc fitting only if 3+ consecutive lines exist
                     If currentArcPoints.Count >= 3 Then
-                        newPaths.AddRange(FitArcSegments(currentArcPoints, tolerance))
-                    ElseIf currentArcPoints.Count = 1 Then
-                        newPaths.Add(New PathCommands(currentArcPoints(0), Nothing, Nothing, "L"c))
+                        Dim arcs = FitArcSegments(currentArcPoints, tolerance)
+                        If arcs IsNot Nothing AndAlso arcs.Count > 0 Then
+                            newPaths.AddRange(arcs)
+                        Else
+                            ' If fitting fails, keep original lines
+                            For Each pt In currentArcPoints
+                                newPaths.Add(New PathCommands(pt, Nothing, Nothing, "L"c))
+                            Next
+                        End If
+                    Else
+                        ' Less than 3 points: just keep them
+                        For Each pt In currentArcPoints
+                            newPaths.Add(New PathCommands(pt, Nothing, Nothing, "L"c))
+                        Next
                     End If
                     currentArcPoints.Clear()
                     newPaths.Add(cmd)
                 End If
             Next
 
-            ' Final remaining lines
+            ' Handle final segment chain
             If currentArcPoints.Count >= 3 Then
-                newPaths.AddRange(FitArcSegments(currentArcPoints, tolerance))
+                Dim arcs = FitArcSegments(currentArcPoints, tolerance)
+                If arcs IsNot Nothing AndAlso arcs.Count > 0 Then
+                    newPaths.AddRange(arcs)
+                Else
+                    For Each pt In currentArcPoints
+                        newPaths.Add(New PathCommands(pt, Nothing, Nothing, "L"c))
+                    Next
+                End If
             ElseIf currentArcPoints.Count > 0 Then
                 For Each pt In currentArcPoints
                     newPaths.Add(New PathCommands(pt, Nothing, Nothing, "L"c))
@@ -4300,24 +4318,26 @@ Namespace Draw
             Return newPaths
         End Function
 
+
         Private Function FitArcSegments(points As List(Of PointF), tolerance As Double) As List(Of PathCommands)
             Dim fitted As New List(Of PathCommands)
 
-            For i = 0 To points.Count - 3
-                Dim p1 = points(i)
-                Dim p2 = points(i + 1)
-                Dim p3 = points(i + 2)
-                Dim arc = TryCreateArc(p1, p2, p3, tolerance)
-                If arc IsNot Nothing Then
-                    fitted.Add(arc)
-                    i += 2 ' Skip next two points (since they form an arc)
-                Else
-                    fitted.Add(New PathCommands(p2, Nothing, Nothing, "L"c))
-                End If
-            Next
+            ' Fit one arc for the full chain (simplified assumption)
+            Dim p1 = points.First()
+            Dim pMid = points(points.Count \ 2)
+            Dim pEnd = points.Last()
+            Dim arc = TryCreateArc(p1, pMid, pEnd, tolerance)
+
+            If arc IsNot Nothing Then
+                fitted.Add(arc)
+            Else
+                ' Return Nothing to signal "no simplification"
+                Return Nothing
+            End If
 
             Return fitted
         End Function
+
 
         Private Function TryCreateArc(p1 As PointF, p2 As PointF, p3 As PointF, tolerance As Double) As PathCommands
             ' Compute circle through 3 points
@@ -4328,24 +4348,23 @@ Namespace Draw
             Dim e = a * (p1.X + p2.X) + b * (p1.Y + p2.Y)
             Dim f = c * (p1.X + p3.X) + d * (p1.Y + p3.Y)
             Dim g = 2 * (a * (p3.Y - p2.Y) - b * (p3.X - p2.X))
-
-            ' If collinear, no arc possible
-            If Math.Abs(g) < 0.0001 Then Return Nothing
+            If Math.Abs(g) < 0.000001 Then Return Nothing ' Collinear
 
             Dim cx = (d * e - b * f) / g
             Dim cy = (a * f - c * e) / g
             Dim r = Math.Sqrt((p1.X - cx) ^ 2 + (p1.Y - cy) ^ 2)
 
-            ' Check if p2 is close to the circle
-            Dim err = Math.Abs(Math.Sqrt((p2.X - cx) ^ 2 + (p2.Y - cy) ^ 2) - r)
-            If err > tolerance Then Return Nothing
+            ' Validate mid-point proximity to circle
+            Dim dist = Math.Abs(Math.Sqrt((p2.X - cx) ^ 2 + (p2.Y - cy) ^ 2) - r)
+            If dist > tolerance Then Return Nothing
 
-            ' Return as arc (Pc = "A")
+            ' Valid arc: construct new command
             Dim arcCmd As New PathCommands(p3, Nothing, Nothing, "A"c)
-            arcCmd.b1 = New PointF(CSng(cx), CSng(cy)) ' store center
-            arcCmd.b2 = New PointF(CSng(r), 0) ' store radius (optional)
+            arcCmd.b1 = New PointF(CSng(cx), CSng(cy))
+            arcCmd.b2 = New PointF(CSng(r), 0)
             Return arcCmd
         End Function
+
 
 #End Region
 
