@@ -1,0 +1,10 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.0//EN" "http://www.w3.org/TR/2001/REC-SVG-20010904/DTD/svg10.dtd">
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="600" height="600">
+<desc>New project</desc>
+<rect ShapeName="Shape0" style="fill:none; stroke:Black; stroke-width:1" x="88.02094" y="91.90524" width="157.1926" height="97.40332" rx="0" ry="0" transform="rotate(22.00924,0,0)" />
+<path ShapeName="Shape1" style="fill:none; stroke:Black; stroke-width:1" d="M150 202.5C150 184.5507 131.4198 170 108.5 170C85.58018 170 67 184.5507 67 202.5C67 220.4493 85.58018 235 108.5 235C131.4198 235 150 220.4493 150 202.5 Z " transform="rotate(0,0,0)" />
+<path ShapeName="Shape3" style="fill:none; stroke:Black; stroke-width:1" d="M228.5874 172.6676C228.5874 147.7301 198.1115 127.5142 160.5175 127.5142C122.9235 127.5142 92.44748 147.7301 92.44748 172.6676C92.44748 197.605 122.9235 217.821 160.5175 217.821C198.1115 217.821 228.5874 197.605 228.5874 172.6676 Z " transform="rotate(18.64662,-42.5,99)" />
+<rect ShapeName="Shape5" style="fill:none; stroke:Black; stroke-width:1" x="57" y="106" width="220" height="90" rx="0" ry="0" transform="rotate(0,0,0)" />
+<path ShapeName="Shape6" style="fill:none; stroke:Black; stroke-width:1" d="M239.3278 146.7206C239.3278 132.3611 201.5507 120.7206 154.9502 120.7206C108.3497 120.7206 70.5726 132.3611 70.5726 146.7206C70.5726 161.08 108.3497 172.7206 154.9502 172.7206C201.5507 172.7206 239.3278 161.08 239.3278 146.7206 Z " transform="rotate(31.11001,26.5,-68)" />
+</svg>
