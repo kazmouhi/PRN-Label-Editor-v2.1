@@ -3174,7 +3174,7 @@ Namespace Draw
                     result.Add(New PathCommands(first, Nothing, Nothing, "Z"c))
                 End If
             End If
-
+            result = ConvertLinesToArcs(result, 0.25)
             Return result
         End Function
 
@@ -3220,10 +3220,6 @@ Namespace Draw
             Return Math.Abs(area) / 2.0
         End Function
 
-        ''' <summary>
-        ''' Intersect that keeps INNER regions (inverse of PunchOut which keeps outer boundary)
-        ''' This finds all overlapping areas between shapes
-        ''' </summary>
         Public Function MergePathsIntersect(drawObjects As List(Of DrawObject)) As List(Of PathCommands)
             Dim result As New List(Of PathCommands)
             If drawObjects Is Nothing OrElse drawObjects.Count = 0 Then Return result
@@ -3288,7 +3284,7 @@ Namespace Draw
                 Next
 
                 ' Flatten the path to convert curves to line segments
-                gp.Flatten(New Matrix(), 0.001F)
+                gp.Flatten()
 
                 Dim pts() As PointF = gp.PathPoints
                 Dim types() As Byte = gp.PathTypes
@@ -3309,20 +3305,13 @@ Namespace Draw
 
                     ' Check if this is the end of a figure
                     If (types(i) And &H80) <> 0 Then
-                        If subPath.Count > 2 Then
-                            ' Remove duplicates
-                            subPath = RemoveDuplicatePoints(subPath)
-                            If subPath.Count > 2 Then subPaths.Add(New List(Of IntPoint)(subPath))
-                        End If
+                        If subPath.Count > 2 Then subPaths.Add(New List(Of IntPoint)(subPath))
                         subPath.Clear()
                     End If
                 Next
 
                 ' Add any remaining path
-                If subPath.Count > 2 Then
-                    subPath = RemoveDuplicatePoints(subPath)
-                    If subPath.Count > 2 Then subPaths.Add(subPath)
-                End If
+                If subPath.Count > 2 Then subPaths.Add(subPath)
 
                 If subPaths.Count > 0 Then objectPolys.Add(subPaths)
             Next
@@ -3330,7 +3319,7 @@ Namespace Draw
             ' If we have less than 2 valid objects, cannot intersect
             If objectPolys.Count < 2 Then Return result
 
-            ' Start with the first object's polygons as the accumulated result
+            ' Start intersection with the first object
             Dim accumulated As List(Of List(Of IntPoint)) = objectPolys(0)
 
             ' Intersect successively with each following object
@@ -3338,57 +3327,33 @@ Namespace Draw
                 Dim clipper As New Clipper()
 
                 ' Add accumulated result as subject
-                For Each poly In accumulated
-                    If poly.Count > 2 Then
-                        Try
-                            clipper.AddPath(poly, PolyType.ptSubject, True)
-                        Catch ex As Exception
-                            Continue For
-                        End Try
-                    End If
-                Next
+                clipper.AddPaths(accumulated, PolyType.ptSubject, True)
 
-                ' Add next object's polygons as clip
-                For Each poly In objectPolys(i)
-                    If poly.Count > 2 Then
-                        Try
-                            clipper.AddPath(poly, PolyType.ptClip, True)
-                        Catch ex As Exception
-                            Continue For
-                        End Try
-                    End If
-                Next
+                ' Add next object as clip
+                clipper.AddPaths(objectPolys(i), PolyType.ptClip, True)
+
+                Dim solution As New List(Of List(Of IntPoint))()
 
                 ' Execute intersection
-                Dim tempSolution As New List(Of List(Of IntPoint))()
-                clipper.Execute(ClipType.ctIntersection, tempSolution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
+                clipper.Execute(ClipType.ctIntersection, solution, PolyFillType.pftNonZero, PolyFillType.pftNonZero)
 
                 ' Update accumulated with intersection result
-                accumulated = tempSolution
+                accumulated = solution
 
                 ' Early exit if intersection becomes empty
-                If accumulated.Count = 0 Then Return result
+                If accumulated.Count = 0 Then Exit For
             Next
 
-            ' Use the final accumulated result
-            Dim finalSolution As List(Of List(Of IntPoint)) = accumulated
-
-            ' Convert result to PathCommands - keep ALL resulting polygons (not just the largest)
-            For Each poly In finalSolution
+            ' Convert final result to PathCommands
+            For Each poly In accumulated
                 If poly.Count = 0 Then Continue For
 
                 Dim first As New PointF(CSng(poly(0).X / scale), CSng(poly(0).Y / scale))
                 result.Add(New PathCommands(first, Nothing, Nothing, "M"c))
 
-                Dim lastPoint As PointF = first
                 For j As Integer = 1 To poly.Count - 1
                     Dim pt As New PointF(CSng(poly(j).X / scale), CSng(poly(j).Y / scale))
-
-                    ' Only add point if it's not a duplicate
-                    If Math.Abs(pt.X - lastPoint.X) > 0.001 OrElse Math.Abs(pt.Y - lastPoint.Y) > 0.001 Then
-                        result.Add(New PathCommands(pt, Nothing, Nothing, "L"c))
-                        lastPoint = pt
-                    End If
+                    result.Add(New PathCommands(pt, Nothing, Nothing, "L"c))
                 Next
 
                 ' Close the path
@@ -4300,6 +4265,86 @@ Namespace Draw
             Next
 
             Return result
+        End Function
+        '==========================================================
+        ' ARC SIMPLIFICATION HELPERS
+        '==========================================================
+        Private Function ConvertLinesToArcs(paths As List(Of PathCommands), Optional tolerance As Double = 0.5) As List(Of PathCommands)
+            Dim newPaths As New List(Of PathCommands)
+            Dim currentArcPoints As New List(Of PointF)
+
+            For Each cmd In paths
+                If cmd.Pc = "L"c Then
+                    currentArcPoints.Add(cmd.P)
+                Else
+                    ' Try to fit arcs for consecutive line points
+                    If currentArcPoints.Count >= 3 Then
+                        newPaths.AddRange(FitArcSegments(currentArcPoints, tolerance))
+                    ElseIf currentArcPoints.Count = 1 Then
+                        newPaths.Add(New PathCommands(currentArcPoints(0), Nothing, Nothing, "L"c))
+                    End If
+                    currentArcPoints.Clear()
+                    newPaths.Add(cmd)
+                End If
+            Next
+
+            ' Final remaining lines
+            If currentArcPoints.Count >= 3 Then
+                newPaths.AddRange(FitArcSegments(currentArcPoints, tolerance))
+            ElseIf currentArcPoints.Count > 0 Then
+                For Each pt In currentArcPoints
+                    newPaths.Add(New PathCommands(pt, Nothing, Nothing, "L"c))
+                Next
+            End If
+
+            Return newPaths
+        End Function
+
+        Private Function FitArcSegments(points As List(Of PointF), tolerance As Double) As List(Of PathCommands)
+            Dim fitted As New List(Of PathCommands)
+
+            For i = 0 To points.Count - 3
+                Dim p1 = points(i)
+                Dim p2 = points(i + 1)
+                Dim p3 = points(i + 2)
+                Dim arc = TryCreateArc(p1, p2, p3, tolerance)
+                If arc IsNot Nothing Then
+                    fitted.Add(arc)
+                    i += 2 ' Skip next two points (since they form an arc)
+                Else
+                    fitted.Add(New PathCommands(p2, Nothing, Nothing, "L"c))
+                End If
+            Next
+
+            Return fitted
+        End Function
+
+        Private Function TryCreateArc(p1 As PointF, p2 As PointF, p3 As PointF, tolerance As Double) As PathCommands
+            ' Compute circle through 3 points
+            Dim a = p2.X - p1.X
+            Dim b = p2.Y - p1.Y
+            Dim c = p3.X - p1.X
+            Dim d = p3.Y - p1.Y
+            Dim e = a * (p1.X + p2.X) + b * (p1.Y + p2.Y)
+            Dim f = c * (p1.X + p3.X) + d * (p1.Y + p3.Y)
+            Dim g = 2 * (a * (p3.Y - p2.Y) - b * (p3.X - p2.X))
+
+            ' If collinear, no arc possible
+            If Math.Abs(g) < 0.0001 Then Return Nothing
+
+            Dim cx = (d * e - b * f) / g
+            Dim cy = (a * f - c * e) / g
+            Dim r = Math.Sqrt((p1.X - cx) ^ 2 + (p1.Y - cy) ^ 2)
+
+            ' Check if p2 is close to the circle
+            Dim err = Math.Abs(Math.Sqrt((p2.X - cx) ^ 2 + (p2.Y - cy) ^ 2) - r)
+            If err > tolerance Then Return Nothing
+
+            ' Return as arc (Pc = "A")
+            Dim arcCmd As New PathCommands(p3, Nothing, Nothing, "A"c)
+            arcCmd.b1 = New PointF(CSng(cx), CSng(cy)) ' store center
+            arcCmd.b2 = New PointF(CSng(r), 0) ' store radius (optional)
+            Return arcCmd
         End Function
 
 #End Region
