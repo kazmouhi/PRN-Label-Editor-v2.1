@@ -2154,7 +2154,7 @@ Namespace Draw
 
 #End Region
 
-#Region "Improved Helper Methods"
+#Region "OLDMerge Helper Methods"
 
             ''' <summary>
             ''' Checks if two sets of paths overlap
@@ -3175,13 +3175,11 @@ Namespace Draw
                 End If
             End If
 
-            ' ===== NEW: SIMPLIFY THE OUTPUT =====
-            ' Convert line segments to arcs/Bezier curves
-            ' Tolerance: 0.5 pixels (adjust as needed)
-            ' preferArcs: True for circular patterns, False for irregular curves
-            Dim simplified_result As List(Of PathCommands) = SimplifyPathWithCurves(result, tolerance:=0.5, preferArcs:=True)
+            '… Clipper part finished, we have result As List(Of PathCommands)
 
-            Return simplified_result
+            Dim pts = FlattenToPoints(result)          'step 1
+            Dim arcCmds = FitArcs(pts, 0.05F)         'step 2–4, 0.05 mm tolerance
+            Return arcCmds
         End Function
 
         ''' <summary>
@@ -3823,73 +3821,99 @@ Namespace Draw
 
 #Region "Helper Methods"
 
-
-        ''Union that keeps **all** sub-paths (no filtering)
-        'Private Function UnionKeepAll(a As List(Of PathCommands),
-        '                      b As List(Of PathCommands)) As List(Of PathCommands)
-        '    'simply concatenate disjoint paths; if they overlap we still keep both
-        '    Dim joined As New List(Of PathCommands)(a)
-        '    joined.AddRange(b)
-        '    Return joined
-        'End Function
-
         '----------------------------------------------------------
-        ' keep every OUTER loop of a previously-united path
+        ' 1.  turn a list of PathCommands into a poly-line
         '----------------------------------------------------------
-        Private Function OuterBoundaryOnly(cmds As List(Of PathCommands)) As List(Of PathCommands)
-            Dim bezPaths As List(Of BezierPath) = ConvertToBezierPaths(cmds)
-            If bezPaths.Count = 0 Then Return New List(Of PathCommands)
-
-            'classify each path:  TRUE = clockwise → outer boundary
-            Dim outerPaths As New List(Of BezierPath)
-            For Each bp In bezPaths
-                If IsClockwise(bp) Then outerPaths.Add(bp)
+        Private Function FlattenToPoints(cmds As List(Of PathCommands)) As List(Of PointF)
+            Dim pts As New List(Of PointF)
+            For Each c In cmds
+                Select Case c.Pc
+                    Case "M"c, "L"c : pts.Add(c.P)
+                    Case "C"c       'sample 5 points on the Bézier
+                        For t = 0 To 1 Step 0.2 : pts.Add(BezierPoint(c, t)) : Next
+                    Case "Z"c       'ignore, we only need the geometry
+                End Select
             Next
-
-            Return ConvertToPathCommandsImproved(outerPaths)
+            Return pts
         End Function
 
         '----------------------------------------------------------
-        ' TRUE  = clockwise → outer boundary
-        ' FALSE = counter-clockwise → hole
+        ' 2.  look for arcs
         '----------------------------------------------------------
-        Private Function IsClockwise(bp As BezierPath) As Boolean
-            Dim area As Double = 0
-            Dim prev As PointF = bp.Segments(0).StartPoint
-            For Each seg In bp.Segments
-                Dim p As PointF = seg.EndPoint
-                area += (prev.X * p.Y - prev.Y * p.X)
-                prev = p
-            Next
-            Return area > 0          'positive ⇒ clockwise
+        Private Function FitArcs(pts As List(Of PointF),
+                         tol As Single) As List(Of PathCommands)
+
+            Dim out As New List(Of PathCommands)
+            Dim i% = 0, n% = pts.Count
+            While i < n - 2
+                Dim j = i + 2                       'minimum 3 points
+                Dim cx!, cy!, r!
+
+                'extend the run while the points still lie on the same circle
+                While j < n AndAlso CircleThrough3(pts(i), pts(i + 1), pts(j), cx, cy, r) AndAlso
+              Math.Abs(Dist(pts(j), cx, cy) - r) < tol
+                    j += 1
+                End While
+
+                If j - i >= 4 Then                  'worth replacing
+                    Dim startAngle! = CSng(Math.Atan2(pts(i).Y - cy, pts(i).X - cx))
+                    Dim endAngle! = CSng(Math.Atan2(pts(j - 1).Y - cy, pts(j - 1).X - cx))
+                    Dim sweep! = endAngle - startAngle
+                    If sweep < 0 Then sweep += 2 * CSng(Math.PI)
+
+                    out.Add(New PathCommands(pts(i), Nothing, Nothing, "M"c))
+                    out.Add(New PathCommands(New PointF(cx, cy), New PointF(r, 0),
+                                     New PointF(startAngle, sweep), "A"c))
+                    i = j - 1                         'skip the swallowed points
+                Else
+                    out.Add(New PathCommands(pts(i), Nothing, Nothing,
+                                     If(out.Count = 0, "M"c, "L"c)))
+                End If
+                i += 1
+            End While
+            If n > 0 Then out.Add(New PathCommands(pts(n - 1), Nothing, Nothing, "Z"c))
+            Return out
         End Function
 
+        '----------------------------------------------------------
+        ' 3.  geometry helpers
+        '----------------------------------------------------------
+        Private Function CircleThrough3(p1 As PointF, p2 As PointF, p3 As PointF,
+                                ByRef cx As Single, ByRef cy As Single, ByRef r As Single) As Boolean
+            'perpendicular bisectors
+            Dim dx21 = p2.X - p1.X, dy21 = p2.Y - p1.Y
+            Dim dx32 = p3.X - p2.X, dy32 = p3.Y - p2.Y
 
+            Dim det = dx21 * dy32 - dy21 * dx32
+            If Math.Abs(det) < 0.000001F Then Return False     'collinear
 
-        '----- tiny helper -----
-        'Shoelace area for a closed BezierPath
-        Private Function Area(bp As BezierPath) As Double
-            Dim a As Double = 0
-            Dim prev As PointF = bp.Segments(0).StartPoint
-            For Each seg In bp.Segments
-                Dim p As PointF = seg.EndPoint
-                a += (prev.X * p.Y - prev.Y * p.X)
-                prev = p
-            Next
-            Return Math.Abs(a * 0.5)
+            Dim A = p1.X * p1.X + p1.Y * p1.Y
+            Dim B = p2.X * p2.X + p2.Y * p2.Y
+            Dim C = p3.X * p3.X + p3.Y * p3.Y
+
+            cx = (A * dy32 + B * dy21 + C * (p1.Y - p2.Y)) / (2 * det)
+            cy = (A * dx32 + B * dx21 + C * (p1.X - p2.X)) / (-2 * det)
+            r = CSng(Math.Sqrt((p1.X - cx) * (p1.X - cx) + (p1.Y - cy) * (p1.Y - cy)))
+            Return True
         End Function
 
-        'Reverses a whole path (changes its winding direction)
-        Private Function ReversePathCommands(cmds As List(Of PathCommands)) As List(Of PathCommands)
-            Dim bezPaths = ConvertToBezierPaths(cmds)   'your existing routine
-            For Each bp In bezPaths
-                bp.Segments.Reverse()
-                For Each seg In bp.Segments
-                    seg = ReverseSegment(seg)           'your existing routine
-                Next
-            Next
-            Return ConvertToPathCommandsImproved(bezPaths)
+        Private Function Dist(p As PointF, cx As Single, cy As Single) As Single
+            Return CSng(Math.Sqrt((p.X - cx) * (p.X - cx) + (p.Y - cy) * (p.Y - cy)))
         End Function
+
+        Private Function BezierPoint(c As PathCommands, t As Single) As PointF
+            'cubic de-Casteljau for one point
+            Dim mt = 1 - t
+            Return New PointF(mt * mt * mt * c.P.X +
+                      3 * mt * mt * t * c.b1.X +
+                      3 * mt * t * t * c.b2.X +
+                      t * t * t * c.P.X,
+                      mt * mt * mt * c.P.Y +
+                      3 * mt * mt * t * c.b1.Y +
+                      3 * mt * t * t * c.b2.Y +
+                      t * t * t * c.P.Y)
+        End Function
+
         ''' <summary>
         ''' Gets the bounding box for a segment
         ''' </summary>
@@ -3910,72 +3934,6 @@ Namespace Draw
             Return New RectangleF(minX, minY, maxX - minX, maxY - minY)
         End Function
 
-        ''' <summary>
-        ''' Checks if two sets of paths overlap
-        ''' </summary>
-        Private Function PathsOverlap(paths1 As List(Of BezierPath), paths2 As List(Of BezierPath)) As Boolean
-            For Each path1 In paths1
-                Dim bounds1 As RectangleF = path1.GetBoundingBox()
-
-                For Each path2 In paths2
-                    Dim bounds2 As RectangleF = path2.GetBoundingBox()
-
-                    If bounds1.IntersectsWith(bounds2) Then
-                        Return True
-                    End If
-                Next
-            Next
-
-            Return False
-        End Function
-
-        ''' <summary>
-        ''' Checks if the first set of paths completely contains the second set
-        ''' </summary>
-        Private Function CompletelyContains(containerPaths As List(Of BezierPath), containedPaths As List(Of BezierPath)) As Boolean
-            ' Check each path in the contained set
-            For Each containedPath In containedPaths
-                If Not containedPath.IsClosed Then Continue For
-
-                ' Take several sample points from this path
-                Dim sampleCount As Integer = Math.Max(4, containedPath.Segments.Count)
-                Dim allPointsContained As Boolean = True
-
-                ' Use segment midpoints as sample points
-                For Each segment In containedPath.Segments
-                    Dim samplePoint As PointF = segment.PointAt(0.5)
-                    Dim isContained As Boolean = False
-
-                    ' Check if any container path contains this point
-                    For Each containerPath In containerPaths
-                        If containerPath.IsClosed AndAlso ContainsPoint(containerPath, samplePoint) Then
-                            isContained = True
-                            Exit For
-                        End If
-                    Next
-
-                    If Not isContained Then
-                        allPointsContained = False
-                        Exit For
-                    End If
-                Next
-
-                If Not allPointsContained Then
-                    Return False
-                End If
-            Next
-
-            Return True
-        End Function
-
-        ''' <summary>
-        ''' Combines two sets of paths that don't overlap
-        ''' </summary>
-        Private Function CombineDisjointPaths(path1 As List(Of PathCommands), path2 As List(Of PathCommands)) As List(Of PathCommands)
-            Dim result As New List(Of PathCommands)(path1)
-            result.AddRange(path2)
-            Return result
-        End Function
 
         ''' <summary>
         ''' Improved version of MarkPathSegments with better inside/outside detection
@@ -4001,105 +3959,7 @@ Namespace Draw
             Next
         End Sub
 
-        ''' <summary>
-        ''' Improved version of ReconstructPaths with better path reconstruction logic
-        ''' </summary>
-        Private Function ReconstructPathsImproved(segments As List(Of BezierSegment), intersections As List(Of PathIntersection)) As List(Of BezierPath)
-            Dim result As New List(Of BezierPath)()
 
-            ' Exit early if no segments
-            If segments.Count = 0 Then Return result
-
-            ' Create a copy of segments we can modify
-            Dim remainingSegments As New List(Of BezierSegment)(segments)
-
-            ' Use a better endpoint tolerance for more accurate connection detection
-            Const ENDPOINT_TOLERANCE As Double = 0.001
-
-            ' Process until all segments are used
-            While remainingSegments.Count > 0
-                Dim currentPath As New BezierPath()
-
-                ' Start with first available segment
-                Dim currentSegment As BezierSegment = remainingSegments(0)
-                remainingSegments.RemoveAt(0)
-                currentPath.Segments.Add(currentSegment)
-
-                Dim startPoint As PointF = currentSegment.StartPoint
-                Dim currentEndPoint As PointF = currentSegment.EndPoint
-
-                ' Loop safety counter
-                Dim loopLimit As Integer = remainingSegments.Count + 10
-                Dim loopCount As Integer = 0
-
-                ' Flag indicating if the path is closed
-                Dim pathClosed As Boolean = False
-
-                ' Keep adding connected segments until path is closed or no more segments can be added
-                While loopCount < loopLimit
-                    loopCount += 1
-
-                    ' Check if we can close the path
-                    If PointDistance(currentEndPoint, startPoint) < ENDPOINT_TOLERANCE Then
-                        pathClosed = True
-                        Exit While
-                    End If
-
-                    ' Find next segment to add
-                    Dim bestSegmentIndex As Integer = -1
-                    Dim bestDistance As Double = ENDPOINT_TOLERANCE
-                    Dim needToReverse As Boolean = False
-
-                    For i As Integer = 0 To remainingSegments.Count - 1
-                        Dim segment As BezierSegment = remainingSegments(i)
-
-                        ' Check distance to start point of segment
-                        Dim distToStart As Double = PointDistance(currentEndPoint, segment.StartPoint)
-                        If distToStart < bestDistance Then
-                            bestSegmentIndex = i
-                            bestDistance = distToStart
-                            needToReverse = False
-                        End If
-
-                        ' Check distance to end point of segment
-                        Dim distToEnd As Double = PointDistance(currentEndPoint, segment.EndPoint)
-                        If distToEnd < bestDistance Then
-                            bestSegmentIndex = i
-                            bestDistance = distToEnd
-                            needToReverse = True
-                        End If
-                    Next
-
-                    ' If found a connecting segment
-                    If bestSegmentIndex >= 0 Then
-                        Dim nextSegment As BezierSegment = remainingSegments(bestSegmentIndex)
-                        remainingSegments.RemoveAt(bestSegmentIndex)
-
-                        ' Reverse segment if needed
-                        If needToReverse Then
-                            nextSegment = ReverseSegment(nextSegment)
-                        End If
-
-                        ' Add to current path
-                        currentPath.Segments.Add(nextSegment)
-                        currentEndPoint = nextSegment.EndPoint
-                    Else
-                        ' No connecting segment found
-                        Exit While
-                    End If
-                End While
-
-                ' Set path closed property
-                currentPath.IsClosed = pathClosed
-
-                ' Only add non-empty paths
-                If currentPath.Segments.Count > 0 Then
-                    result.Add(currentPath)
-                End If
-            End While
-
-            Return result
-        End Function
 
         ''' <summary>
         ''' Tests if a point is inside a closed path
@@ -4213,34 +4073,6 @@ Namespace Draw
             Return result
         End Function
 
-        ''' <summary>
-        ''' Combines segments from paths for the specified boolean operation
-        ''' </summary>
-        Private Function CombineSegmentsForOperation(paths1 As List(Of BezierPath), paths2 As List(Of BezierPath)) As List(Of BezierSegment)
-            Dim result As New List(Of BezierSegment)()
-
-            ' Add segments from first set of paths
-            For Each path In paths1
-                For Each segment In path.Segments
-                    If segment.Keep Then
-                        result.Add(segment.Clone())
-                    End If
-                Next
-            Next
-
-            ' Add segments from second set of paths if provided
-            If paths2 IsNot Nothing Then
-                For Each path In paths2
-                    For Each segment In path.Segments
-                        If segment.Keep Then
-                            result.Add(segment.Clone())
-                        End If
-                    Next
-                Next
-            End If
-
-            Return result
-        End Function
 
         ''' <summary>
         ''' Converts BezierPaths back to PathCommands
@@ -4272,369 +4104,6 @@ Namespace Draw
 
             Return result
         End Function
-
-        ' Add this to your GraphicsList class to simplify merged paths
-
-        ''' <summary>
-        ''' Converts line segments in a path to arcs and Bezier curves
-        ''' Significantly reduces point count while maintaining accuracy
-        ''' </summary>
-        Public Function SimplifyPathWithCurves(pathCommands As List(Of PathCommands),
-                                      tolerance As Single,
-                                      preferArcs As Boolean) As List(Of PathCommands)
-            If pathCommands.Count < 3 Then Return pathCommands
-
-            ' Group line segments
-            Dim groups As New List(Of List(Of PathCommands))
-            Dim currentGroup As New List(Of PathCommands)
-
-            For Each cmd In pathCommands
-                Select Case cmd.Pc
-                    Case "M"c
-                        If currentGroup.Count > 0 Then
-                            groups.Add(New List(Of PathCommands)(currentGroup))
-                            currentGroup.Clear()
-                        End If
-                        currentGroup.Add(cmd)
-                    Case "Z"c
-                        currentGroup.Add(cmd)
-                        groups.Add(New List(Of PathCommands)(currentGroup))
-                        currentGroup.Clear()
-                    Case Else
-                        currentGroup.Add(cmd)
-                End Select
-            Next
-
-            If currentGroup.Count > 0 Then groups.Add(currentGroup)
-
-            ' Process each group (each closed path)
-            Dim result As New List(Of PathCommands)
-            For Each group In groups
-                result.AddRange(SimplifyPathGroup(group, tolerance, preferArcs))
-            Next
-
-            Return result
-        End Function
-
-        ''' <summary>
-        ''' Simplifies a single path group (from M to Z)
-        ''' </summary>
-        Private Function SimplifyPathGroup(pathGroup As List(Of PathCommands),
-                                   tolerance As Single,
-                                   preferArcs As Boolean) As List(Of PathCommands)
-            If pathGroup.Count < 3 Then Return pathGroup
-
-            Dim result As New List(Of PathCommands)
-
-            ' Start with the move command
-            result.Add(pathGroup(0))
-
-            ' Extract line segments
-            Dim points As New List(Of PointF)
-            For i = 0 To pathGroup.Count - 1
-                Select Case pathGroup(i).Pc
-                    Case "M"c
-                        points.Add(pathGroup(i).P)
-                    Case "L"c
-                        points.Add(pathGroup(i).P)
-                    Case "Z"c
-                        ' Skip Z for now, add at end
-                    Case Else
-                        ' Keep existing curves as-is
-                        result.Add(pathGroup(i))
-                End Select
-            Next
-
-            ' Simplify the point sequence
-            Dim simplified = SimplifyPointSequence(points, tolerance)
-
-            ' Fit curves to simplified points
-            If preferArcs Then
-                result.AddRange(FitArcsToPoints(simplified, tolerance))
-            Else
-                result.AddRange(FitBeziersToPoints(simplified, tolerance))
-            End If
-
-            ' Add closing Z
-            result.Add(New PathCommands(simplified(0), Nothing, Nothing, "Z"c))
-
-            Return result
-        End Function
-
-        ''' <summary>
-        ''' Ramer-Douglas-Peucker algorithm: removes redundant collinear points
-        ''' </summary>
-        Private Function SimplifyPointSequence(points As List(Of PointF),
-                                       tolerance As Single) As List(Of PointF)
-            If points.Count < 3 Then Return points
-
-            Dim maxDist As Single = 0
-            Dim maxIndex As Integer = 0
-
-            ' Find point with max distance from line between start and end
-            Dim start = points(0)
-            Dim endPt = points(points.Count - 1)
-
-            For i = 1 To points.Count - 2
-                Dim dist = PointToLineDistance(points(i), start, endPt)
-                If dist > maxDist Then
-                    maxDist = dist
-                    maxIndex = i
-                End If
-            Next
-
-            ' If max distance exceeds tolerance, recurse
-            If maxDist > tolerance Then
-                Dim left = points.GetRange(0, maxIndex + 1)
-                Dim right = points.GetRange(maxIndex, points.Count - maxIndex)
-
-                Dim leftSimplified = SimplifyPointSequence(left, tolerance)
-                Dim rightSimplified = SimplifyPointSequence(right, tolerance)
-
-                ' Combine, removing duplicate at junction
-                Dim result As New List(Of PointF)(leftSimplified)
-                result.AddRange(rightSimplified.Skip(1))
-                Return result
-            Else
-                ' All points between start and end are within tolerance
-                Return New List(Of PointF) From {start, endPt}
-            End If
-        End Function
-
-        ''' <summary>
-        ''' Distance from point P to line segment AB
-        ''' </summary>
-        Private Function PointToLineDistance(p As PointF, a As PointF, b As PointF) As Single
-            Dim dx = b.X - a.X
-            Dim dy = b.Y - a.Y
-            Dim lenSq = dx * dx + dy * dy
-
-            If lenSq < 0.0001 Then
-                ' A and B are very close, return distance to A
-                dx = p.X - a.X
-                dy = p.Y - a.Y
-                Return Math.Sqrt(dx * dx + dy * dy)
-            End If
-
-            ' Parameter t of closest point on line segment
-            Dim t = Math.Max(0, Math.Min(1, ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / lenSq))
-
-            ' Closest point on segment
-            Dim closestX = a.X + t * dx
-            Dim closestY = a.Y + t * dy
-
-            ' Distance to closest point
-            dx = p.X - closestX
-            dy = p.Y - closestY
-            Return Math.Sqrt(dx * dx + dy * dy)
-        End Function
-
-        ''' <summary>
-        ''' Fits circular arcs to sequences of points
-        ''' Returns PathCommands with arc approximations using Bezier curves (A not supported in PathCommands)
-        ''' </summary>
-        Private Function FitArcsToPoints(points As List(Of PointF),
-                                tolerance As Single) As List(Of PathCommands)
-            Dim result As New List(Of PathCommands)
-            Dim i As Integer = 0
-
-            While i < points.Count - 1
-                ' Try to fit an arc starting at points(i)
-                Dim arcEnd As Integer = i + 1
-                Dim center As PointF = Nothing
-                Dim radius As Single = 0
-                Dim isValid As Boolean = False
-
-                ' Try progressively longer arcs
-                While arcEnd < points.Count - 1
-                    Dim fitResult = FitCircleArc(points.GetRange(i, arcEnd - i + 1))
-
-                    If fitResult IsNot Nothing Then
-                        Dim maxError As Single = 0
-                        For j = i To arcEnd
-                            Dim dist = PointDistance(points(j), fitResult.Item1)
-                            maxError = Math.Max(maxError, Math.Abs(dist - fitResult.Item2))
-                        Next
-
-                        If maxError <= tolerance Then
-                            center = fitResult.Item1
-                            radius = fitResult.Item2
-                            isValid = True
-                            arcEnd += 1
-                        Else
-                            Exit While
-                        End If
-                    Else
-                        Exit While
-                    End If
-                End While
-
-                If isValid AndAlso arcEnd - i > 2 Then
-                    ' Convert arc to Bezier approximation (3 segments per 90 degrees)
-                    Dim beziers = ArcToBeziersApprox(center, radius, points(i), points(arcEnd - 1))
-                    result.AddRange(beziers)
-                    i = arcEnd - 1
-                Else
-                    ' Fall back to line or Bezier
-                    result.Add(New PathCommands(points(i + 1), Nothing, Nothing, "L"c))
-                    i += 1
-                End If
-            End While
-
-            Return result
-        End Function
-
-        ''' <summary>
-        ''' Fits best-fit circle to 3+ points
-        ''' Returns (center, radius) or Nothing if degenerate
-        ''' </summary>
-        Private Function FitCircleArc(points As List(Of PointF)) As Tuple(Of PointF, Single)
-            If points.Count < 3 Then Return Nothing
-
-            ' Use least-squares circle fitting
-            Dim n As Double = points.Count
-            Dim sumX As Double = 0, sumY As Double = 0
-            Dim sumX2 As Double = 0, sumY2 As Double = 0
-            Dim sumXY As Double = 0
-            Dim sumX3 As Double = 0, sumY3 As Double = 0
-            Dim sumX2Y As Double = 0, sumXY2 As Double = 0
-
-            For Each p In points
-                sumX += p.X
-                sumY += p.Y
-                sumX2 += p.X * p.X
-                sumY2 += p.Y * p.Y
-                sumXY += p.X * p.Y
-                sumX3 += p.X * p.X * p.X
-                sumY3 += p.Y * p.Y * p.Y
-                sumX2Y += p.X * p.X * p.Y
-                sumXY2 += p.X * p.Y * p.Y
-            Next
-
-            Dim A = n * sumX2 - sumX * sumX
-            Dim B = n * sumXY - sumX * sumY
-            Dim C = n * sumY2 - sumY * sumY
-            Dim D = 0.5 * (n * (sumX3 + sumXY2) - sumX * (sumX2 + sumY2))
-            Dim E = 0.5 * (n * (sumX2Y + sumY3) - sumY * (sumX2 + sumY2))
-
-            Dim denom = A * C - B * B
-            If Math.Abs(denom) < 0.0001 Then Return Nothing
-
-            Dim centerX = (D * C - B * E) / denom
-            Dim centerY = (A * E - B * D) / denom
-
-            ' Calculate radius
-            Dim radiusSq As Double = 0
-            For Each p In points
-                Dim dx = p.X - centerX
-                Dim dy = p.Y - centerY
-                radiusSq += dx * dx + dy * dy
-            Next
-            radiusSq /= n
-
-            Dim radius = Math.Sqrt(radiusSq)
-
-            Return New Tuple(Of PointF, Single)(New PointF(centerX, centerY), radius)
-        End Function
-
-        ''' <summary>
-        ''' Converts an arc to Bezier curve approximations
-        ''' Splits arc into segments, each approximated by cubic Bezier
-        ''' </summary>
-        Private Function ArcToBeziersApprox(center As PointF, radius As Single,
-                                   startPt As PointF, endPt As PointF) As List(Of PathCommands)
-            Dim result As New List(Of PathCommands)
-
-            ' Calculate angles
-            Dim startAngle = Math.Atan2(startPt.Y - center.Y, startPt.X - center.X)
-            Dim endAngle = Math.Atan2(endPt.Y - center.Y, endPt.X - center.X)
-
-            ' Ensure angle goes in positive direction
-            If endAngle < startAngle Then endAngle += 2 * Math.PI
-
-            Dim totalAngle = endAngle - startAngle
-            Dim segments = Math.Ceiling(Math.Abs(totalAngle) / (Math.PI / 2))
-            Dim segmentAngle = totalAngle / segments
-
-            Dim kappa = (4.0 / 3.0) * Math.Tan(segmentAngle / 4.0)
-
-            Dim currentAngle = startAngle
-
-            For seg = 0 To segments - 1
-                Dim nextAngle = currentAngle + segmentAngle
-
-                ' Arc start and end points
-                Dim p0X = center.X + radius * Math.Cos(currentAngle)
-                Dim p0Y = center.Y + radius * Math.Sin(currentAngle)
-                Dim p3X = center.X + radius * Math.Cos(nextAngle)
-                Dim p3Y = center.Y + radius * Math.Sin(nextAngle)
-
-                ' Control points
-                Dim p1X = p0X - kappa * radius * Math.Sin(currentAngle)
-                Dim p1Y = p0Y + kappa * radius * Math.Cos(currentAngle)
-                Dim p2X = p3X + kappa * radius * Math.Sin(nextAngle)
-                Dim p2Y = p3Y - kappa * radius * Math.Cos(nextAngle)
-
-                result.Add(New PathCommands(
-            New PointF(p3X, p3Y),
-            New PointF(p1X, p1Y),
-            New PointF(p2X, p2Y),
-            "C"c))
-
-                currentAngle = nextAngle
-            Next
-
-            Return result
-        End Function
-
-        ''' <summary>
-        ''' Fits Bezier curves directly to point sequences
-        ''' More accurate for irregular curves than arcs
-        ''' </summary>
-        Private Function FitBeziersToPoints(points As List(Of PointF),
-                                   tolerance As Single) As List(Of PathCommands)
-            Dim result As New List(Of PathCommands)
-
-            Dim i As Integer = 0
-            While i < points.Count - 1
-                Dim segEnd = Math.Min(i + 3, points.Count - 1)
-                Dim segmentPoints = points.GetRange(i, segEnd - i + 1)
-
-                If segmentPoints.Count = 2 Then
-                    ' Just a line
-                    result.Add(New PathCommands(segmentPoints(1), Nothing, Nothing, "L"c))
-                    i += 1
-                ElseIf segmentPoints.Count = 3 Then
-                    ' Quadratic to cubic Bezier (approximate)
-                    Dim ctrl1 = New PointF(
-                (segmentPoints(0).X + 2 * segmentPoints(1).X) / 3,
-                (segmentPoints(0).Y + 2 * segmentPoints(1).Y) / 3)
-                    Dim ctrl2 = New PointF(
-                (2 * segmentPoints(1).X + segmentPoints(2).X) / 3,
-                (2 * segmentPoints(1).Y + segmentPoints(2).Y) / 3)
-
-                    result.Add(New PathCommands(segmentPoints(2), ctrl1, ctrl2, "C"c))
-                    i += 2
-                Else
-                    ' Fit cubic Bezier to 4+ points using Catmull-Rom
-                    Dim p0 = segmentPoints(0)
-                    Dim p3 = segmentPoints(segmentPoints.Count - 1)
-
-                    ' Approximate control points
-                    Dim p1Idx = Math.Min(1, segmentPoints.Count - 1)
-                    Dim p2Idx = Math.Max(2, segmentPoints.Count - 2)
-
-                    Dim ctrl1 = segmentPoints(p1Idx)
-                    Dim ctrl2 = segmentPoints(p2Idx)
-
-                    result.Add(New PathCommands(p3, ctrl1, ctrl2, "C"c))
-                    i += segmentPoints.Count - 1
-                End If
-            End While
-
-            Return result
-        End Function
-
 
 #End Region
 
